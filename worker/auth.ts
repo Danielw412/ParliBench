@@ -27,8 +27,14 @@ export async function createSession(db: D1Database, userId: string) {
 export async function requireUser(request: Request, db: D1Database): Promise<User> {
   const token = request.headers.get('Authorization')?.match(/^Bearer ([a-f0-9]{64})$/)?.[1];
   if (!token) throw new HttpError(401, 'Please sign in to continue.');
-  const user = await one<User>(db, 'SELECT u.id,u.username,u.user_type,us.reveal_names FROM sessions s JOIN users u ON u.id=s.user_id JOIN user_settings us ON us.user_id=u.id WHERE s.token_hash=? AND s.expires_at>?', await digest(token), Date.now());
+  const user = await one<User>(db, 'SELECT u.id,u.username,u.user_type,u.is_admin,us.reveal_names FROM sessions s JOIN users u ON u.id=s.user_id JOIN user_settings us ON us.user_id=u.id WHERE s.token_hash=? AND s.expires_at>?', await digest(token), Date.now());
   if (!user) throw new HttpError(401, 'Your session has expired. Please sign in again.');
+  return user;
+}
+// Every admin request re-reads the account, so a revoked role takes effect immediately on existing sessions.
+export async function requireAdmin(request: Request, db: D1Database): Promise<User> {
+  const user = await requireUser(request, db);
+  if (!user.is_admin) throw new HttpError(403, 'This account does not have administrator access.');
   return user;
 }
 export async function rateLimit(db: D1Database, key: string, limit: number, windowMs: number) {

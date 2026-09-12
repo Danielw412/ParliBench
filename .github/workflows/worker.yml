@@ -36,8 +36,6 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: deploy
           secrets: |
-            ADMIN_SECRET
             PIN_PEPPER
         env:
-          ADMIN_SECRET: ${{ secrets.ADMIN_SECRET }}
           PIN_PEPPER: ${{ secrets.PIN_PEPPER }}
