@@ -95,20 +95,22 @@ A rebuttal references:
 
 Every tested system should eventually rebut the same frozen Government source cases for a motion. Arena rebuttal comparisons must share the same Government source response.
 
+The **rebuttal prompt text itself is intentionally deferred** and will be supplied later. Implement the data model, relationships, scheduling, prompt-template support, and placeholders needed for rebuttal, but do not invent or finalize a rebuttal prompt unless explicitly asked.
+
 ## Prompt system
-Seed files:
+Current seed files:
 ```text
 prompts/government.txt
 prompts/opposition.txt
-prompts/rebuttal.txt
-prompts/extract-case-json.txt
 ```
-Use files as default seed content; runtime edits should create DB-backed prompt revisions.
 
-Placeholders:
-- Government: `{{MOTION}}`
-- Opposition: `{{MOTION}}`
-- Rebuttal: `{{MOTION}}`, `{{GOVERNMENT_CASE_JSON}}`, `{{OPPOSITION_CASE_JSON}}`
+Use these files as default seed content; runtime edits should create DB-backed prompt revisions.
+
+Current case-generation placeholder:
+- Government: `{MOTION}`
+- Opposition: `{MOTION}`
+
+The future rebuttal template should support motion + structured Government/Opposition case inputs, but its exact wording and placeholder format will be finalized later.
 
 Validate required/unknown placeholders. When a run starts, snapshot the fully rendered prompt so later template edits cannot change in-progress or historical provenance. `NextRun` should show the rendered prompt and a one-click Copy prompt action.
 
