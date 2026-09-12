@@ -3,18 +3,30 @@
   "name": "parlibench-api",
   "main": "worker/index.ts",
   "compatibility_date": "2026-09-11",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
   "workers_dev": true,
   "preview_urls": false,
-  "observability": { "enabled": true },
+  "secrets": {
+    "required": [
+      "ADMIN_SECRET",
+      "PIN_PEPPER"
+    ]
+  },
+  "observability": {
+    "enabled": true
+  },
   "vars": {
     "ALLOWED_ORIGINS": "https://danielw412.github.io",
     "ENVIRONMENT": "production"
   },
-  "d1_databases": [{
-    "binding": "DB",
-    "database_name": "parlibench",
-    "database_id": "790c6b14-7935-4343-bc69-5b51f01f7d62",
-    "migrations_dir": "migrations"
-  }]
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "parlibench",
+      "database_id": "790c6b14-7935-4343-bc69-5b51f01f7d62",
+      "migrations_dir": "migrations"
+    }
+  ]
 }
