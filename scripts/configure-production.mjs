@@ -1,0 +1,12 @@
+import { readFileSync, writeFileSync } from 'node:fs';
+const { D1_DATABASE_ID, BACKEND_DOMAIN, FRONTEND_ORIGIN } = process.env;
+if (!D1_DATABASE_ID || !/^[a-f0-9-]{36}$/.test(D1_DATABASE_ID) || D1_DATABASE_ID.startsWith('00000000')) throw Error('Set D1_DATABASE_ID');
+if (!BACKEND_DOMAIN || !/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(BACKEND_DOMAIN)) throw Error('Set BACKEND_DOMAIN to a hostname, without https:// or a path');
+const origin = new URL(FRONTEND_ORIGIN || '');
+if (origin.protocol !== 'https:' || origin.origin !== FRONTEND_ORIGIN) throw Error('FRONTEND_ORIGIN must be an HTTPS origin without a trailing slash or path');
+const config = JSON.parse(readFileSync('wrangler.jsonc','utf8'));
+config.d1_databases[0].database_id = D1_DATABASE_ID;
+config.routes = [{pattern:BACKEND_DOMAIN,custom_domain:true}];
+config.vars = {ENVIRONMENT:'production',ALLOWED_ORIGINS:FRONTEND_ORIGIN};
+writeFileSync('wrangler.jsonc',JSON.stringify(config,null,2)+'\n');
+console.log('Configured D1, exact frontend origin, and custom backend domain.');
