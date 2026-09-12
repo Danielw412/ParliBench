@@ -1,7 +1,7 @@
 You are preparing the Government side for a high school PHSSL Parliamentary Debate round.
 
 Motion:
-{{MOTION}}
+{MOTION}
 
 Your goal is to produce the strongest useful Government preparation for skilled debaters.
 
