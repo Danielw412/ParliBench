@@ -315,10 +315,27 @@ main{min-height:65vh}
 .catalog-section{margin-top:35px}
 .catalog-row{display:flex;justify-content:space-between;align-items:center;gap:25px;padding:18px 0;border-bottom:1px solid var(--line);font-size:12px}
 .catalog-row code{display:block;font-size:10px;margin-top:8px;color:var(--muted)}
+.role-actions{display:flex;align-items:center;gap:12px;flex-shrink:0}
 .weights-form>p{font-size:12px}
 .weights-form fieldset{border-top:1px solid var(--line);padding:25px 0;margin:35px 0 15px}
 .weights-form legend{padding-right:20px}
 .weights-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:22px}
+.run-planner .section-heading{margin:36px 0 18px}
+.run-planner>.section-heading:first-of-type{margin-top:8px}
+.run-card{border:1px solid var(--line);border-radius:6px;padding:22px 26px 24px;background:var(--wash);margin-bottom:14px}
+.run-meta{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:14px}
+.run-motion{font-size:20px;letter-spacing:-.025em;line-height:1.45;margin:0 0 18px;max-width:1000px}
+.run-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px 24px;margin:0 0 16px}
+.run-facts dt{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
+.run-facts dd{margin:0;font-size:13px;font-weight:600;overflow-wrap:anywhere}
+.run-configuration{margin:0 0 16px;line-height:1.7}
+.run-detail{border:1px solid var(--line);background:var(--panel);border-radius:4px;padding:12px 16px;margin-bottom:10px;font-size:12px}
+.run-detail summary{cursor:pointer;font-weight:650}
+.run-detail summary code{font-size:10px;color:var(--muted);font-weight:400}
+.run-detail pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;line-height:1.8;margin:16px 0 2px;max-height:320px;overflow:auto}
+.run-detail .response-text{padding-top:16px;max-width:800px}
+.run-actions{display:flex;flex-wrap:wrap;gap:12px;margin-top:20px}
+.run-form{margin:24px 0 0;border-top:1px solid var(--line);padding-top:24px}
 
 /* Responsive */
 @media(max-width:1150px){
@@ -445,6 +462,8 @@ main{min-height:65vh}
   .file-picker{align-items:start;flex-wrap:wrap}
   .file-picker input{max-width:100%}
   .weights-grid{grid-template-columns:1fr 1fr;gap:16px}
+  .run-card{padding:18px}
+  .run-motion{font-size:17px}
   .weights-grid label{font-size:11px}
   .reveal-pair{grid-template-columns:1fr;gap:14px}
   .vote-success{padding:40px 0 24px}

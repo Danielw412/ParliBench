@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { METRICS, TASKS, applicableMetrics } from '../shared/domain';
+import { METRICS, RUN_TASKS, TASKS, applicableMetrics } from '../shared/domain';
 import { HttpError } from './db';
 export const id = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/);
 export const short = z.string().trim().min(1).max(300);
@@ -28,6 +28,13 @@ export const responseSchema = z.object({
   reasoning: short.nullable().default(null), configuration: z.string().max(5000).default(''), duration_ms: z.number().int().nonnegative().nullable().default(null),
   sample: z.number().int().positive().default(1), context_id: id,
 }).strict();
+// A scheduled run: which system configuration runs which motion, on which side, continuing which
+// Opposition stage. The sample number and response ID are derived by the backend, never supplied.
+export const runSlotSchema = z.object({
+  system_id: id, topic_id: id, task: z.enum(RUN_TASKS), standardized_task_id: id.nullable().default(null),
+  prediction_response_id: id.nullable().default(null), rebuttal_response_id: id.nullable().default(null),
+}).strict();
+export const runResultSchema = responseSchema.omit({ id: true, system_id: true, topic_id: true, task: true, standardized_task_id: true, sample: true });
 export const importSchema = z.object({
   systems: z.array(systemSchema).default([]), topics: z.array(topicSchema).default([]),
   standardized_rebuttal_tasks: z.array(z.object({ id, topic_id: id, title: short, government_response_id: id.nullable().default(null), case_text: text }).strict()).default([]),

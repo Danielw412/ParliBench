@@ -15,6 +15,7 @@
     "db:migrate": "wrangler d1 migrations apply parlibench --local",
     "db:seed": "tsx scripts/seed.ts",
     "setup": "node scripts/setup.mjs",
+    "admin:grant": "node scripts/grant-admin.mjs",
     "types": "wrangler types worker/env.d.ts --include-runtime false",
     "deploy:worker": "wrangler deploy"
   },

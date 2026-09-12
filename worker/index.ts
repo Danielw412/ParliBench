@@ -1,14 +1,15 @@
 import { z, ZodError } from 'zod';
 import { credentials, registration, filterSchema, id, systemSchema, topicSchema } from './validation';
-import { createSession, digest, equalSecret, hashPin, rateLimit, requireUser } from './auth';
+import { createSession, digest, equalSecret, hashPin, rateLimit, requireAdmin, requireUser } from './auth';
 import { HttpError, one, rows } from './db';
 import { bulkImport } from './importer';
 import { nextMatch, saveVote, judgmentDetail } from './arena';
 import { leaderboard, headToHead } from './statistics';
+import { claimRun, recordRun, releaseRun, runBoard } from './scheduler';
 import { validateBlindText } from './sanitize';
 import { applicableMetrics, TASKS, type SystemInfo, type User } from '../shared/domain';
 
-export type AppEnv = Cloudflare.Env & { ADMIN_SECRET: string; PIN_PEPPER: string };
+export type AppEnv = Cloudflare.Env & { PIN_PEPPER: string };
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 async function body(request: Request): Promise<unknown> {
   if (!request.headers.get('Content-Type')?.includes('application/json')) throw new HttpError(415, 'Expected application/json');
@@ -24,12 +25,6 @@ async function body(request: Request): Promise<unknown> {
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
   try { return JSON.parse(new TextDecoder().decode(bytes)); } catch { throw new HttpError(400, 'Invalid JSON'); }
 }
-async function admin(request: Request, env: AppEnv) {
-  if (!env.ADMIN_SECRET || env.ADMIN_SECRET.length < 32) throw new HttpError(503, 'Admin secret is not configured');
-  const supplied = request.headers.get('X-Admin-Secret') || '';
-  if (!await equalSecret(supplied, env.ADMIN_SECRET)) throw new HttpError(403, 'Invalid admin secret');
-}
-
 async function route(request: Request, env: AppEnv): Promise<Response> {
   const db = env.DB, url = new URL(request.url), path = url.pathname.replace(/\/$/, ''), method = request.method;
   const f = () => filterSchema.parse(Object.fromEntries(url.searchParams));
@@ -56,12 +51,12 @@ async function route(request: Request, env: AppEnv): Promise<Response> {
       } catch (error) {
         if (String(error).includes('UNIQUE')) throw new HttpError(409, 'That username is already taken'); throw error;
       }
-      user = { id: userId, username: reg.username, user_type: reg.user_type, reveal_names: 0 };
+      user = { id: userId, username: reg.username, user_type: reg.user_type, reveal_names: 0, is_admin: 0 };
     } else {
       const existing = await one<User & { pin_hash: string; pin_salt: string }>(db, 'SELECT u.*,us.reveal_names FROM users u JOIN user_settings us ON us.user_id=u.id WHERE username=? COLLATE NOCASE', parsed.username);
       const hash = await hashPin(parsed.pin, existing?.pin_salt || 'unknown-user-dummy-salt', env.PIN_PEPPER);
       if (!existing || !await equalSecret(existing.pin_hash, hash)) throw new HttpError(401, 'Username or PIN is incorrect');
-      user = { id: existing.id, username: existing.username, user_type: existing.user_type, reveal_names: existing.reveal_names };
+      user = { id: existing.id, username: existing.username, user_type: existing.user_type, reveal_names: existing.reveal_names, is_admin: existing.is_admin };
     }
     return json({ token: await createSession(db, user.id), user }, isRegister ? 201 : 200);
   }
@@ -132,21 +127,33 @@ async function route(request: Request, env: AppEnv): Promise<Response> {
   }
   if (path.startsWith('/api/admin')) {
     await rateLimit(db, `admin:${await digest(request.headers.get('CF-Connecting-IP') || 'local')}`, 60, 60000);
-    await admin(request, env);
+    const me = await requireAdmin(request, db);
     if (path === '/api/admin/catalog' && method === 'GET') {
-      const [systems, topics, responses, standards, judges, weights, source] = await Promise.all([
+      const [systems, topics, responses, standards, judges, weights, source, users] = await Promise.all([
         rows(db, 'SELECT * FROM systems'), rows(db, 'SELECT * FROM topics'),
         rows(db, 'SELECT id,system_id,topic_id,task,sample,display_version FROM responses ORDER BY id'),
         rows(db, 'SELECT * FROM standardized_rebuttal_tasks'), rows(db, 'SELECT * FROM ai_judges'),
         rows(db, 'SELECT * FROM benchmark_weights'), one(db, 'SELECT human,ai FROM source_weights WHERE id=1'),
+        rows(db, 'SELECT id,username,user_type,created_at,is_admin FROM users ORDER BY is_admin DESC,username COLLATE NOCASE'),
       ]);
-      return json({ systems, topics, responses, standards, judges, weights, source });
+      return json({ systems, topics, responses, standards, judges, weights, source, users });
     }
     if (path === '/api/admin/import' && method === 'POST') {
       try { return json(await bulkImport(db, await body(request)), 201); }
       catch (error) {
         if (error instanceof ZodError || error instanceof HttpError) throw error;
         throw new HttpError(400, `Import rejected: ${String(error instanceof Error ? error.message : error).slice(0, 500)}`);
+      }
+    }
+    if (path === '/api/admin/next-run' && method === 'GET') return json(await runBoard(db));
+    if (path === '/api/admin/runs' && method === 'POST') return json(await claimRun(db, await body(request)), 201);
+    const run = path.match(/^\/api\/admin\/runs\/([a-zA-Z0-9-]+)\/(response|release)$/);
+    if (run && method === 'POST') {
+      if (run[2] === 'release') return json(await releaseRun(db, run[1]));
+      try { return json(await recordRun(db, run[1], await body(request)), 201); }
+      catch (error) {
+        if (error instanceof ZodError || error instanceof HttpError) throw error;
+        throw new HttpError(400, `Run rejected: ${String(error instanceof Error ? error.message : error).slice(0, 500)}`);
       }
     }
     const display = path.match(/^\/api\/admin\/responses\/([a-zA-Z0-9_-]+)$/);
@@ -189,6 +196,19 @@ async function route(request: Request, env: AppEnv): Promise<Response> {
       ]);
       return json({ saved: true });
     }
+    const account = path.match(/^\/api\/admin\/users\/([a-zA-Z0-9_-]+)$/);
+    if (account && method === 'PATCH') {
+      const input = z.object({ is_admin: z.boolean() }).strict().parse(await body(request));
+      const target = await one<{ id: string; username: string; is_admin: number }>(db, 'SELECT id,username,is_admin FROM users WHERE id=?', account[1]);
+      if (!target) throw new HttpError(404, 'Account not found');
+      // The last administrator cannot be demoted, including by themselves, or nobody could grant the role back.
+      if (target.is_admin && !input.is_admin) {
+        const remaining = await one<{ n: number }>(db, 'SELECT count(*) n FROM users WHERE is_admin=1 AND id<>?', target.id);
+        if (!remaining?.n) throw new HttpError(400, target.id === me.id ? 'You are the only administrator. Promote another account before removing your own access.' : 'ParliBench must keep at least one administrator.');
+      }
+      await db.prepare('UPDATE users SET is_admin=? WHERE id=?').bind(input.is_admin ? 1 : 0, target.id).run();
+      return json({ saved: true, id: target.id, username: target.username, is_admin: input.is_admin ? 1 : 0 });
+    }
   }
   throw new HttpError(404, 'Endpoint not found');
 }
@@ -200,7 +220,7 @@ export default {
     if (origin && !allowed.includes(origin)) return json({ error: 'Origin not allowed' }, 403);
     if (origin) headers.set('Access-Control-Allow-Origin', origin);
     headers.set('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,OPTIONS');
-    headers.set('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Admin-Secret');
+    headers.set('Access-Control-Allow-Headers', 'Content-Type,Authorization');
     headers.set('Access-Control-Max-Age', '600');
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers });
     let response: Response;

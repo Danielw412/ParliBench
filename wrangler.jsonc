@@ -10,7 +10,6 @@
   "preview_urls": false,
   "secrets": {
     "required": [
-      "ADMIN_SECRET",
       "PIN_PEPPER"
     ]
   },

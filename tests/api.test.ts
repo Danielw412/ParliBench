@@ -3,15 +3,16 @@ import { Miniflare, Log, LogLevel, convertV4MiniflareOptions } from 'miniflare';
 import { build } from 'esbuild';
 import { readFile, readdir } from 'node:fs/promises';
 import { createDemoData } from '../scripts/demo-data';
-import type { ArenaMatch, Judgment, Leaderboard, User } from '../shared/domain';
+import type { AccountRow, ArenaMatch, Judgment, Leaderboard, User } from '../shared/domain';
 import { sanitizeDisplay } from '../worker/sanitize';
-const adminSecret='test-admin-secret-with-more-than-thirty-two-characters';
 let mf:Miniflare, db:D1Database;
-let alice:{token:string;user:User}, bob:{token:string;user:User};
+let founder:{token:string;user:User}, alice:{token:string;user:User}, bob:{token:string;user:User};
 let first:ArenaMatch;
 const data = createDemoData();
+// `admin` sends the founding administrator's ordinary session: there is no separate admin credential.
 async function request(path:string,method='GET',value?:unknown,token?:string,admin=false) {
-  return mf.dispatchFetch(`http://localhost/api${path}`,{method,headers:{'Content-Type':'application/json',Origin:'http://localhost:5173',...(token ? {Authorization:`Bearer ${token}`} : {}),...(admin ? {'X-Admin-Secret':adminSecret} : {})},body:value === undefined ? undefined : JSON.stringify(value)});
+  const bearer = admin ? founder.token : token;
+  return mf.dispatchFetch(`http://localhost/api${path}`,{method,headers:{'Content-Type':'application/json',Origin:'http://localhost:5173',...(bearer ? {Authorization:`Bearer ${bearer}`} : {})},body:value === undefined ? undefined : JSON.stringify(value)});
 }
 async function parsed<T>(path:string,method='GET',value?:unknown,token?:string,admin=false):Promise<T> {
   const response=await request(path,method,value,token,admin); const result=await response.json();
@@ -19,13 +20,20 @@ async function parsed<T>(path:string,method='GET',value?:unknown,token?:string,a
 }
 beforeAll(async()=> {
   const bundle=await build({entryPoints:['worker/index.ts'],bundle:true,write:false,format:'esm',platform:'browser',target:'es2022'});
-  mf=new Miniflare(convertV4MiniflareOptions({modules:true,script:bundle.outputFiles[0].text,compatibilityDate:'2026-09-11',compatibilityFlags:['nodejs_compat'],d1Databases:['DB'],bindings:{ADMIN_SECRET:adminSecret,PIN_PEPPER:'test-pin-pepper-longer-than-thirty-two-characters',ALLOWED_ORIGINS:'http://localhost:5173',ENVIRONMENT:'test'},log:new Log(LogLevel.ERROR),outboundService:()=>{throw new Error('Outbound requests are forbidden: benchmark must never call AI APIs');}}));
+  mf=new Miniflare(convertV4MiniflareOptions({modules:true,script:bundle.outputFiles[0].text,compatibilityDate:'2026-09-11',compatibilityFlags:['nodejs_compat'],d1Databases:['DB'],bindings:{PIN_PEPPER:'test-pin-pepper-longer-than-thirty-two-characters',ALLOWED_ORIGINS:'http://localhost:5173',ENVIRONMENT:'test'},log:new Log(LogLevel.ERROR),outboundService:()=>{throw new Error('Outbound requests are forbidden: benchmark must never call AI APIs');}}));
   db=await mf.getD1Database('DB') as unknown as D1Database;
-  for (const migration of (await readdir('migrations')).filter(f=>f.endsWith('.sql')).sort()) {
-    const sql=(await readFile(`migrations/${migration}`,'utf8')).replace(/^--.*$/gm,'');
-    const statements=sql.split(/;\s*(?=(?:CREATE|INSERT|PRAGMA|ALTER|UPDATE)\b|$)/i).filter(s=>s.trim());
-    await db.batch(statements.map(s=>db.prepare(s)));
+  async function migrate(files:string[]) {
+    for (const migration of files) {
+      const sql=(await readFile(`migrations/${migration}`,'utf8')).replace(/^--.*$/gm,'');
+      const statements=sql.split(/;\s*(?=(?:CREATE|INSERT|PRAGMA|ALTER|UPDATE)\b|$)/i).filter(s=>s.trim());
+      await db.batch(statements.map(s=>db.prepare(s)));
+    }
   }
+  // Register the founding account before the bootstrap migration, exactly as production did.
+  const files=(await readdir('migrations')).filter(f=>f.endsWith('.sql')).sort(), bootstrap=files.indexOf('0003_account_admins.sql');
+  await migrate(files.slice(0,bootstrap));
+  founder=await parsed('/auth/register','POST',{username:'dannywang',pin:'135790',user_type:'Parliamentary Debater'});
+  await migrate(files.slice(bootstrap));
   await parsed('/admin/import','POST',{...data,ai_votes:[]},undefined,true);
   await parsed('/admin/import','POST',{ai_votes:data.ai_votes.slice(0,12)},undefined,true);
 });
@@ -101,7 +109,13 @@ describe('Worker + real local D1 integration',()=> {
     expect((await request(`/judgments/${next.id}`,'GET',undefined,alice.token)).status).toBe(404);
     const result=await parsed<{names:{a:string;b:string}}>(`/judgments/${next.id}`,'POST',{overall:0,metrics:{}},alice.token); expect(result.names.a).toContain('[DEMO]');
   });
-  it('protects admin independently of user PIN sessions',async()=> { expect((await request('/admin/catalog','GET',undefined,alice.token)).status).toBe(403); expect((await request('/admin/catalog','GET',undefined,undefined,true)).status).toBe(200); });
+  it('grants admin only to administrator accounts, and ignores the retired admin header',async()=> {
+    expect((await request('/admin/catalog','GET')).status).toBe(401);
+    expect((await request('/admin/catalog','GET',undefined,alice.token)).status).toBe(403);
+    const legacy=await mf.dispatchFetch('http://localhost/api/admin/catalog',{headers:{Origin:'http://localhost:5173','X-Admin-Secret':'test-admin-secret-with-more-than-thirty-two-characters'}});
+    expect(legacy.status).toBe(401);
+    expect((await request('/admin/catalog','GET',undefined,undefined,true)).status).toBe(200);
+  });
   it('preserves raw text and already-seen snapshots after display edits',async()=> {
     const assigned=await db.prepare('SELECT m.response_low id FROM arena_assignments aa JOIN matchups m ON m.id=aa.matchup_id WHERE aa.id=?').bind(first.id).first<{id:string}>();
     const original=await parsed<{raw_output:string;display_output:string}>(`/admin/responses/${assigned!.id}`,'GET',undefined,undefined,true);
@@ -163,6 +177,31 @@ describe('Worker + real local D1 integration',()=> {
     const denied=await mf.dispatchFetch('http://localhost/api/stats',{headers:{Origin:'https://untrusted.example'}}); expect(denied.status).toBe(403);
     const allowed=await request('/stats'); expect(allowed.headers.get('Access-Control-Allow-Origin')).toBe('http://localhost:5173'); expect(allowed.headers.get('Cache-Control')).toBe('no-store');
     const preflight=await mf.dispatchFetch('http://localhost/api/arena/next',{method:'OPTIONS',headers:{Origin:'http://localhost:5173'}}); expect(preflight.status).toBe(204);
+  });
+  it('bootstraps the founding administrator through the migration',async()=> {
+    expect((await parsed<User>('/auth/me','GET',undefined,founder.token)).is_admin).toBe(1);
+    expect((await parsed<User>('/auth/me','GET',undefined,alice.token)).is_admin).toBe(0);
+    const admins=await db.prepare('SELECT username FROM users WHERE is_admin=1').all<{username:string}>();
+    expect(admins.results.map(a=>a.username)).toEqual(['dannywang']);
+  });
+  it('lets an administrator promote and revoke another account',async()=> {
+    const before=await parsed<{users:AccountRow[]}>('/admin/catalog','GET',undefined,undefined,true);
+    expect(before.users.find(u=>u.username==='bob')?.is_admin).toBe(0);
+    await parsed(`/admin/users/${bob.user.id}`,'PATCH',{is_admin:true},undefined,true);
+    expect((await request('/admin/catalog','GET',undefined,bob.token)).status).toBe(200);
+    await parsed(`/admin/users/${bob.user.id}`,'PATCH',{is_admin:false},undefined,true);
+    expect((await request('/admin/catalog','GET',undefined,bob.token)).status).toBe(403);
+    expect((await request(`/admin/users/${bob.user.id}`,'PATCH',{is_admin:true},alice.token)).status).toBe(403);
+    expect((await request('/admin/users/missing-account','PATCH',{is_admin:true},undefined,true)).status).toBe(404);
+  });
+  it('never lets the last administrator lose access, including their own',async()=> {
+    expect((await request(`/admin/users/${founder.user.id}`,'PATCH',{is_admin:false},undefined,true)).status).toBe(400);
+    expect((await parsed<User>('/auth/me','GET',undefined,founder.token)).is_admin).toBe(1);
+    await parsed(`/admin/users/${bob.user.id}`,'PATCH',{is_admin:true},undefined,true);
+    await parsed(`/admin/users/${founder.user.id}`,'PATCH',{is_admin:false},undefined,true);
+    expect((await request('/admin/catalog','GET',undefined,founder.token)).status).toBe(403);
+    expect((await request(`/admin/users/${bob.user.id}`,'PATCH',{is_admin:false},bob.token)).status).toBe(400);
+    expect((await parsed<User>('/auth/me','GET',undefined,bob.token)).is_admin).toBe(1);
   });
   it('rate-limits repeated PIN attempts',async()=> { for(let i=0;i<10;i++) await request('/auth/login','POST',{username:'nonexistent',pin:'1234'}); expect((await request('/auth/login','POST',{username:'nonexistent',pin:'1234'})).status).toBe(429); });
   it('expires and revokes sessions',async()=> { const logged=await parsed<{token:string}>('/auth/login','POST',{username:'bob',pin:'2468'}); await parsed('/auth/logout','POST',undefined,logged.token); expect((await request('/auth/me','GET',undefined,logged.token)).status).toBe(401); await db.prepare('UPDATE sessions SET expires_at=0 WHERE user_id=?').bind(bob.user.id).run(); expect((await request('/auth/me','GET',undefined,bob.token)).status).toBe(401); });

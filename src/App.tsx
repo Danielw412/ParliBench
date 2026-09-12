@@ -52,7 +52,7 @@ export default function App() {
       <Route path="/admin" element={<Admin />} />
       <Route path="*" element={<div className="empty-state"><h1>Page not found</h1><Link to="/">Back to ParliBench</Link></div>} />
     </Routes></Suspense></main>
-    <footer className="site-footer"><div className="wrap footer-wrap"><Link className="footer-brand" to="/">ParliBench</Link><nav aria-label="Footer"><Link to="/leaderboard">Methodology</Link><Link to="/admin">Admin</Link><a href="https://github.com/Danielw412/ParliBench" target="_blank" rel="noreferrer">GitHub <ArrowUpRightIcon /></a></nav></div></footer>
+    <footer className="site-footer"><div className="wrap footer-wrap"><Link className="footer-brand" to="/">ParliBench</Link><nav aria-label="Footer"><Link to="/leaderboard">Methodology</Link>{user?.is_admin ? <Link to="/admin">Admin</Link> : null}<a href="https://github.com/Danielw412/ParliBench" target="_blank" rel="noreferrer">GitHub <ArrowUpRightIcon /></a></nav></div></footer>
   </>;
 }
 

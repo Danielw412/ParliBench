@@ -4,7 +4,7 @@ import { ArrowClockwiseIcon } from '@phosphor-icons/react/dist/csr/ArrowClockwis
 import { CircleNotchIcon } from '@phosphor-icons/react/dist/csr/CircleNotch';
 import { InfoIcon } from '@phosphor-icons/react/dist/csr/Info';
 import type { ReactNode } from 'react';
-import { METRIC_LABELS, TASK_LABELS, VOTE_OPTIONS, type RankingRow, type VoteValue } from '../shared/domain';
+import { METRIC_LABELS, RUN_TASK_LABELS, TASK_LABELS, VOTE_OPTIONS, type RankingRow, type VoteValue } from '../shared/domain';
 
 export function PageHeader({ title, description, action }: { title: string; description?: string; action?: ReactNode }) {
   return <div className="page-heading"><div><h1>{title}</h1>{description && <p className="page-description">{description}</p>}</div>{action}</div>;
@@ -42,4 +42,4 @@ export function ResponseText({ text }: { text: string }) {
     return <p key={i}>{inline(block)}</p>;
   })}</div>;
 }
-export function TaskBadge({ task }: { task: string }) { return <span className="badge">{TASK_LABELS[task as keyof typeof TASK_LABELS] || task}</span>; }
+export function TaskBadge({ task }: { task: string }) { return <span className="badge">{RUN_TASK_LABELS[task as keyof typeof RUN_TASK_LABELS] || task}</span>; }
