@@ -1,0 +1,136 @@
+You are preparing the Opposition side for a high school PHSSL Parliamentary Debate round.
+
+Motion:
+{MOTION}
+
+Your goal is to produce the strongest useful Opposition preparation for skilled debaters.
+
+PHSSL Parliamentary Debate emphasizes logical reasoning, persuasive argumentation, general knowledge, useful examples, and comparative analysis rather than relying too much on published sources.
+
+Before answering, consider a broad range of plausible Opposition arguments. Discard arguments that are weak, repetitive, highly speculative, easily rebutted, or unnecessarily complicated. Do not output the discarded arguments.
+
+Output exactly the 3-4 strongest Opposition contentions.
+
+## Motion Interpretation
+
+First determine what the motion is actually asking Opposition to reject.
+
+Adapt your case to the type of motion:
+
+- For a POLICY or ACTION motion, explain why the proposed change should not occur and the important mechanisms, harms, tradeoffs, or alternatives involved.
+- For a VALUE or MORAL motion, establish the principle or standard that should decide the debate and explain why it favors Opposition.
+- For a FACTUAL or PREDICTIVE motion, establish why the proposition is unlikely, false, incomplete, or less persuasive than the strongest alternative explanation.
+- For a REGRETS motion, defend the real-world path against the plausible counterfactual in which the regretted development, decision, or trend did not occur. Opposition should show why the real world is better overall, or why Government cannot establish that its counterfactual would have been better.
+- For an ABSTRACT, METAPHORICAL, or IDIOMATIC motion, choose the most reasonable and educational interpretation of the wording. Briefly state that interpretation before arguing it. Do not exploit ambiguity to create an artificially easy case.
+
+Do not redefine a motion merely to defend an easier subset of what it actually asks.
+
+"This House" may only be defined as:
+- the people in the room
+- the United States Federal Government
+- the United Nations
+- a non-specific developing country
+- the state of Pennsylvania
+- a non-specific local government
+- another House made obvious by the wording of the resolution
+
+If the House is made obvious by the motion, use that actor.
+
+Keep framing and definitions brief. Only define terms that materially affect the debate.
+
+Do not use abusive definitions, technicalities, or interpretations that avoid the central controversy.
+
+For EACH contention, use this structure:
+
+## Contention [number]: [short descriptive title]
+
+### Claim
+
+State the central claim in roughly one sentence.
+
+Use simple, clear language that a debater could easily understand and explain during the round.
+
+### Warrants
+
+Explain why the claim is true.
+
+Use multiple distinct warrants where useful. Warrants may include:
+
+Logic-driven warrant:
+Explain the causal chain step by step. Show why one event, incentive, belief, or behavior leads to the next.
+
+Example-driven warrant:
+Use a relevant real-world, historical, current-event, hypothetical, or intuitive example that demonstrates or illustrates the reasoning.
+
+Evidence/trend-driven warrant:
+Use a well-established fact, pattern, trend, or statistic when useful.
+
+You do not need to use every type of warrant.
+
+Never invent statistics, studies, quotations, events, or factual details.
+
+Distinguish between:
+- what an example actually demonstrates, and
+- the broader conclusion you infer from it.
+
+### Impact
+
+Explain the terminal consequence of the argument.
+
+Do not stop at an intermediate impact such as:
+"this hurts the economy,"
+"this reduces trust,"
+"this creates instability,"
+or
+"this violates rights."
+
+Explain why that outcome ultimately matters to people, institutions, society, or the world.
+
+Trace the impact to the final meaningful consequence.
+
+For primarily moral or philosophical motions, explain both why the principle matters intrinsically and, where relevant, what accepting or rejecting it means in practice.
+
+### Comparative
+
+Explain why this contention helps Opposition defeat the motion rather than merely establishing that Government has some disadvantage.
+
+Compare Opposition with the strongest plausible Government world, interpretation, or counterfactual.
+
+If the contention relies on an alternative system or counterfactual, explain:
+- why that alternative is realistically plausible, and
+- why it avoids the identified harm rather than recreating the same problem in another form.
+
+Explain why Opposition's advantage is more likely, larger, more important, more durable, or otherwise outweighs the competing consideration.
+
+### Likely Government response
+
+Briefly identify the strongest realistic response Government could make to this contention.
+
+Do not choose an intentionally weak response.
+
+### Opposition defense
+
+Briefly explain the strongest answer Opposition should give.
+
+Do not merely repeat the original contention. Explain why the Government response fails, is comparatively less important, or can be conceded without losing the contention.
+
+After all contentions, include:
+
+## Round Priorities
+
+Identify the 2-3 most important propositions Opposition must establish to defeat the motion.
+
+Explain which clashes deserve the most attention and how Opposition should weigh them.
+
+GENERAL REQUIREMENTS:
+
+- Prioritize depth over quantity.
+- Prefer clear causal reasoning over assertions.
+- Prefer contentions that remain strong after obvious Government responses.
+- Use concrete examples when they materially improve the argument.
+- Include non-obvious arguments when genuinely useful, but do not sacrifice plausibility for creativity.
+- Do not force consequential or policy analysis onto a motion that is primarily moral, philosophical, factual, or abstract.
+- Distinguish factual background from your inference about what that fact means.
+- Write concise prep notes, not a polished speech.
+- Do not include citations, URLs, a bibliography, or a sources section.
+- Stay within 900 words.
