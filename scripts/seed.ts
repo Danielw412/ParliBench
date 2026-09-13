@@ -36,7 +36,7 @@ for (const [i,auth] of accounts.entries()) {
   const username = auth.user.username;
   const profile = await call<{judgment_count:number}>(`/profiles/${username}`);
   for(let n=profile.judgment_count;n<48;n++) {
-    const task = ['government','prediction','standardized_rebuttal','full_opposition'][n%4];
+    const task = ['government','opposition'][n%2];
     const {matchup} = await call<{matchup:ArenaMatch|null}>(`/arena/next?task=${task}`,'POST',undefined,auth.token);
     if(!matchup) continue;
     await call(`/judgments/${matchup.id}`,'POST',{overall:((n+i)%5)-2,metrics:demoMetricVote(matchup.metrics,n+i)},auth.token);

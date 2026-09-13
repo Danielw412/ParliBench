@@ -1,15 +1,14 @@
 import { rows, one } from './db';
 import { filterSchema } from './validation';
 import { balanceSources, bradleyTerry, preferenceOutcome, wilsonInterval, type Comparison } from './ranking';
-import type { Metric, SystemInfo, Leaderboard } from '../shared/domain';
+import { activeResponseSQL, METRICS, type Metric, type SystemInfo, type Leaderboard } from '../shared/domain';
 import type { z } from 'zod';
 export type Filters = z.infer<typeof filterSchema>;
 interface VoteRow { id: string; a: string; b: string; overall: number; metrics: string; task: string; category: string; source: 'human' | 'ai'; }
 export async function comparisonsFor(db: D1Database, f: Filters, userId?: string, pair?: [string,string]) {
-  const conditions = ['1=1']; const params: string[] = [];
+  const conditions = [activeResponseSQL('r'), activeResponseSQL('r2'), "(r.task<>'rebuttal' OR r.government_source_response_id=r2.government_source_response_id)"]; const params: string[] = [];
   if (f.category !== 'all') { conditions.push('t.category=?'); params.push(f.category); }
-  if (f.task === 'opposition') conditions.push("r.task<>'government'");
-  else if (f.task !== 'all') { conditions.push('r.task=?'); params.push(f.task); }
+  if (f.task !== 'all') { conditions.push('r.task=?'); params.push(f.task); }
   if (pair) { conditions.push('((r.system_id=? AND r2.system_id=?) OR (r.system_id=? AND r2.system_id=?))'); params.push(pair[0],pair[1],pair[1],pair[0]); }
   const common = `JOIN matchups m ON m.id=ASSIGN_MATCH JOIN responses r ON r.id=m.response_low JOIN responses r2 ON r2.id=m.response_high JOIN topics t ON t.id=r.topic_id`;
   const sources: string[] = []; const values: string[] = [];
@@ -67,8 +66,8 @@ export async function leaderboard(db: D1Database, f: Filters, userId?: string): 
 export async function headToHead(db: D1Database, a: string, b: string) {
   const sections = [
     { label: 'Overall Preference', metric: 'overall' },
-    ...(['argument','evidence','creativity','strategy','threat','rebuttal'] as const).map(metric => ({ label: metric, metric })),
-    ...(['government','opposition'] as const).map(task => ({ label: task, task })),
+    ...METRICS.map(metric => ({ label: metric, metric })),
+    ...(['government','opposition','rebuttal'] as const).map(task => ({ label: task, task })),
     ...(['Serious','Informal'] as const).map(category => ({ label: category, category })),
     ...(['human','ai'] as const).map(source => ({ label: source, source })),
   ];

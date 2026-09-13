@@ -1,5 +1,7 @@
+import { caseMarkdown, coreCaseMarkdown, coreCaseSchema, structuredCaseSchema } from '../shared/cases';
+import { validateBlindText } from './sanitize';
 import { HttpError, one, rows } from './db';
-import { applicableMetrics, type ArenaMatch, type Judgment, type Task, type User, type VoteValue } from '../shared/domain';
+import { activeResponseSQL, applicableMetrics, type ArenaMatch, type Judgment, type Task, type User, type VoteValue } from '../shared/domain';
 import { ballot, validateMetrics } from './validation';
 import type { Filters } from './statistics';
 
@@ -8,17 +10,25 @@ interface Candidate { id: string; response_low: string; response_high: string; m
 export async function displayRun(db: D1Database, id: string): Promise<string> {
   const run = await one<{ display_output: string; task: string }>(db, 'SELECT display_output,task FROM responses WHERE id=?', id);
   if (!run) throw new HttpError(404, 'Response not found');
+  if (['government','opposition'].includes(run.task)) {
+    const derived=await one<{case_json:string}>(db,`SELECT c.case_json FROM structured_cases c JOIN responses r ON r.id=c.response_id WHERE c.response_id=? AND c.status='ready' AND r.display_version=1`,id);
+    if (derived) {
+      try {
+        const systems=await rows<{id:string;display_name:string;provider:string;model:string;interface:string}>(db,'SELECT * FROM systems');
+        return validateBlindText(caseMarkdown(structuredCaseSchema.parse(JSON.parse(derived.case_json)),run.task),systems.flatMap(s=>[s.id,s.display_name,s.provider,s.model,s.interface]));
+      } catch { /* Use validated display text if derived content cannot be blinded safely. */ }
+    }
+  }
   if (run.task !== 'full_opposition') return run.display_output;
   const stages = await one<{ prediction: string; rebuttal: string }>(db, `SELECT p.display_output prediction,r.display_output rebuttal FROM opposition_preps op JOIN responses p ON p.id=op.prediction_response_id JOIN responses r ON r.id=op.rebuttal_response_id WHERE op.response_id=?`, id);
   if (!stages) throw new HttpError(409, 'Incomplete Opposition pipeline');
   return `## Government argument predictions\n\n${stages.prediction}\n\n## Rebuttals · fresh context\n\n${stages.rebuttal}\n\n## Constructive material\n\n${run.display_output}`;
 }
 export async function nextMatch(db: D1Database, user: User, filters: Filters): Promise<ArenaMatch | null> {
-  const where = ["r.active=1", "r2.active=1", "s.active=1", "s2.active=1", "t.active=1", 'NOT EXISTS(SELECT 1 FROM arena_assignments seen WHERE seen.user_id=? AND seen.matchup_id=m.id)'];
+  const where = [activeResponseSQL('r'), activeResponseSQL('r2'), "(r.task<>'rebuttal' OR r.government_source_response_id=r2.government_source_response_id)", "r.active=1", "r2.active=1", "s.active=1", "s2.active=1", "t.active=1", 'NOT EXISTS(SELECT 1 FROM arena_assignments seen WHERE seen.user_id=? AND seen.matchup_id=m.id)'];
   const params: (string | number)[] = [user.id, user.id, user.id];
   if (filters.category !== 'all') { where.push('t.category=?'); params.push(filters.category); }
-  if (filters.task === 'opposition') where.push("r.task<>'government'");
-  else if (filters.task !== 'all') { where.push('r.task=?'); params.push(filters.task); }
+  if (filters.task !== 'all') { where.push('r.task=?'); params.push(filters.task); }
   // All samples contribute to a system pair's judgment count. Recency penalizes repeated topics.
   const candidates = await rows<Candidate>(db, `WITH
     judged_pairs AS (SELECT min(a.system_id,b.system_id) sa,max(a.system_id,b.system_id) sb,count(*) n
@@ -29,10 +39,10 @@ export async function nextMatch(db: D1Database, user: User, filters: Filters): P
     system_exposure AS (SELECT rr.system_id,count(*) n FROM arena_assignments aa JOIN matchups mm ON mm.id=aa.matchup_id
       JOIN responses rr ON rr.id=mm.response_low OR rr.id=mm.response_high WHERE aa.user_id=? GROUP BY rr.system_id),
     matchup_counts AS (SELECT aa.matchup_id,count(*) n FROM human_votes hv JOIN arena_assignments aa ON aa.id=hv.id GROUP BY aa.matchup_id)
-    SELECT m.id,m.response_low,m.response_high,t.motion,t.category,r.task,r.system_id a,r2.system_id b,st.case_text context
+    SELECT m.id,m.response_low,m.response_high,t.motion,t.category,r.task,r.system_id a,r2.system_id b,pool.core_case_json context
     FROM matchups m JOIN responses r ON r.id=m.response_low JOIN responses r2 ON r2.id=m.response_high
     JOIN systems s ON s.id=r.system_id JOIN systems s2 ON s2.id=r2.system_id JOIN topics t ON t.id=r.topic_id
-    LEFT JOIN standardized_rebuttal_tasks st ON st.id=r.standardized_task_id
+    LEFT JOIN rebuttal_pool pool ON pool.government_response_id=r.government_source_response_id
     LEFT JOIN judged_pairs jp ON jp.sa=min(r.system_id,r2.system_id) AND jp.sb=max(r.system_id,r2.system_id)
     LEFT JOIN system_exposure e1 ON e1.system_id=r.system_id LEFT JOIN system_exposure e2 ON e2.system_id=r2.system_id
     LEFT JOIN matchup_counts mc ON mc.matchup_id=m.id
@@ -41,6 +51,7 @@ export async function nextMatch(db: D1Database, user: User, filters: Filters): P
       +coalesce(jp.n,0)*0.6+coalesce(mc.n,0)*2+(coalesce(e1.n,0)+coalesce(e2.n,0))*1.5
       +(abs(random()%1000)/1000.0)*3 LIMIT 8`, ...params);
   for (const c of candidates) {
+    if (c.task==='rebuttal' && c.context) c.context=coreCaseMarkdown(coreCaseSchema.parse(JSON.parse(c.context)));
     const [low, high] = await Promise.all([displayRun(db, c.response_low), displayRun(db, c.response_high)]);
     const id = crypto.randomUUID(), swapped = randomSwap();
     const result = await db.prepare('INSERT OR IGNORE INTO arena_assignments(id,user_id,matchup_id,swapped,snapshot_low,snapshot_high,context_snapshot,motion_snapshot,category_snapshot,task_snapshot) VALUES(?,?,?,?,?,?,?,?,?,?)').bind(id, user.id, c.id, swapped, low, high, c.context, c.motion, c.category, c.task).run();

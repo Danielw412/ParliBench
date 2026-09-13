@@ -14,7 +14,7 @@ const configurations = [
   ['demo-orbit','Orbit / Workspace [DEMO]','Placeholder Research','Orbit-Example','Example Code Workspace','Not specified','Workspace and search were available offline; fictional fixture.'],
 ] as const;
 const timestamp = '2026-09-01T12:00:00.000Z';
-export function createDemoData() {
+export function createHistoricalDemoData() {
   const systems = configurations.map(([id,display_name,provider,model,iface,reasoning,configuration]) => ({id,display_name,provider,model,interface:iface,reasoning,configuration,active:1}));
   const topics = motions.map(({id,motion,category}) => ({id,motion,category,active:1,metadata_json:'{"demo":true}'}));
   const responses: Record<string,unknown>[] = [], predictions:{response_id:string}[] = [], rebuttals:{response_id:string;prediction_response_id:string;fresh_context:1}[] = [], preps:{response_id:string;prediction_response_id:string;rebuttal_response_id:string}[] = [];
@@ -48,3 +48,54 @@ export function createDemoData() {
   return {systems,topics,standardized_rebuttal_tasks:standards,responses,opposition_predictions:predictions,opposition_rebuttals:rebuttals,opposition_preps:preps,ai_judges,ai_votes};
 }
 export const demoMetricVote = (metrics: Metric[], n:number) => Object.fromEntries(metrics.filter((_,i) => (n+i)%6 !== 0).map((m,i) => [m,((n+i)%5)-2]));
+
+export function demoCase(motion: string, side: string, lens: string) {
+  return `## Motion Interpretation
+
+Evaluate ${motion}
+
+## Contention 1: ${lens}
+
+### Claim
+
+${side === 'government' ? 'A change can remove barriers to participation.' : 'A targeted alternative can address the underlying barriers.'}
+
+### Warrants
+
+People respond to the choices available to them. Compare how each arrangement changes those choices.
+
+A hypothetical person with few alternatives illustrates why access matters; this is an illustration, not empirical evidence.
+
+### Impact
+
+People gain more reliable access to work, education, and care.
+
+### Comparative
+
+Compare the likelihood and distribution of gains against implementation costs.
+
+### Likely ${side === 'government' ? 'Opposition' : 'Government'} response
+
+Other constraints may prevent the expected benefit.
+
+### Defense
+
+Identify which constraints remain and explain their relative importance.
+
+## Round Priorities
+
+Defend the causal link and compare the people affected.`;
+}
+export function createDemoData() {
+  const historical=createHistoricalDemoData();
+  const {systems,topics,ai_judges}=historical;
+  const responses=topics.flatMap((t,ti)=>systems.flatMap((s,si)=>['government','opposition'].map(task=>{
+    const output=demoCase(t.motion,task,['Access and fairness','Institutional incentives','Practical feasibility','Opportunity costs'][si]);
+    return {id:`${s.id}-${t.id}-${task}`,system_id:s.id,topic_id:t.id,task,raw_output:output,display_output:output,prompt:`[DEMO historical execution] Prepare ${task} for: ${t.motion}`,generated_at:timestamp,interface:s.interface,reasoning:s.reasoning,configuration:s.configuration,duration_ms:12000+si*2300+ti*300,sample:1,context_id:`ctx-${si}-${ti}-${task}`};
+  })));
+  const ai_votes=historical.ai_votes.filter(v=>v.response_a && String(v.response_a).endsWith('-government')).flatMap(v=>['government','opposition'].map(task=>{
+    const a=String(v.response_a).replace(/government$/,task),b=String(v.response_b).replace(/government$/,task);
+    return {...v,id:String(v.id).replace('government',task),response_a:a,response_b:b,snapshot_a:responses.find(r=>r.id===a)!.display_output,snapshot_b:responses.find(r=>r.id===b)!.display_output};
+  }));
+  return {systems,topics,responses,ai_judges,ai_votes};
+}

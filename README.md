@@ -2,7 +2,7 @@
 
 **Benchmarking AI systems for Parliamentary Debate prep.** A deployable MVP with a React/TypeScript/Vite frontend on GitHub Pages and a Cloudflare Worker backed by D1.
 
-**No AI APIs are called by this application.** There are no AI SDKs, inference endpoints, provider credentials, or Workers AI bindings. All model responses and AI judgments are produced elsewhere and imported. The integration test Worker denies outbound network requests. External systems can originally use any tools or search configuration; record that setup in their provenance.
+Benchmark model executions and AI judgments are produced externally. An optional server-side Gemini extractor converts recorded case text into derived structured data; it never generates benchmark responses. Local development and deterministic extraction work without any AI credentials.
 
 ## Quick start
 
@@ -23,7 +23,7 @@ npm run db:seed
 
 Open [the local application](http://127.0.0.1:5173). The Vite development proxy sends `/api` to the local Worker. No frontend environment file is needed locally.
 
-The seed is deliberately fictional: four labeled demo systems, four motions (Serious and Informal), 80 run records, all four Arena types, linked fresh-context Opposition stages, two fictional AI judges with 192 judgments, and four human demo users with 48 votes each. Both human subgroups are represented. Demo PIN: **246810**, usernames `demo_debater`, `demo_observer`, `demo_debater_two`, and `demo_observer_two`. These are local demonstration accounts, not real people or evaluations. Seeding grants `demo_debater` administrator access locally, because importing the corpus is an administrator action.
+The seed is deliberately fictional: four labeled demo systems, four motions (Serious and Informal), 32 case records, independent Government/Opposition tasks, two fictional AI judges with 96 judgments, and four human demo users with 48 votes each. Both human subgroups are represented. Demo PIN: **246810**, usernames `demo_debater`, `demo_observer`, `demo_debater_two`, and `demo_observer_two`. These are local demonstration accounts, not real people or evaluations. Seeding grants `demo_debater` administrator access locally, because importing the corpus is an administrator action.
 
 Seeding is local-only and preserves an existing corpus. Re-running tops up each demo account to 48 votes. `npx tsx scripts/seed.ts --export-only` regenerates the importable [demo corpus](demo/benchmark.json), without contacting any services. The JSON includes fake AI judgments but no user credentials. Importing this corpus remotely is an explicit admin action; never present it as real benchmark evidence.
 
@@ -52,7 +52,7 @@ On restricted Windows environments, Vite, Wrangler, Vitest, and tsx need permiss
 
 ## Cloudflare D1 and Worker deployment
 
-The frontend stays on **GitHub Pages**. Cloudflare hosts only the API and D1 database. A custom backend domain is supported directly; `workers.dev` and preview URLs are disabled.
+The frontend stays on **GitHub Pages**. Cloudflare hosts only the API and D1 database. The configured deployment uses `workers.dev`; a custom backend domain is also supported.
 
 1. Authenticate with `npx wrangler login`, or provide `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` through the environment. The API token needs Worker script editing, D1 editing, and the permissions needed to bind a Workers custom domain in the selected zone.
 2. Create the database:
@@ -128,63 +128,64 @@ Administrator access is a role on a user account. Sign in normally, then open `/
 - **Last administrator.** The backend refuses any change that would leave zero administrators, including an administrator revoking their own access. Promote a replacement first.
 - **Recovery.** If a deployment somehow has no administrator, grant one straight in D1 with `npm run admin:grant -- <username> --remote` (omit `--remote` for the local database). This needs Cloudflare credentials, so it is not a path an application user can take.
 
-## Import workflow
+## Admin workflow
 
-Open `/admin` as an administrator, then choose:
+The existing Admin area provides **Next Run, Prompts, Rebuttal Pool, Manual Entry, JSON Import, Display Editor, Catalog, Ranking Weights, and Administrators**. Every endpoint is protected by account-based administrator authorization.
 
-- **Next run:** the scheduler names one benchmark run to execute next, starts it, and takes its response. See [Next run scheduling](#next-run-scheduling).
-- **Manual entry:** systems, topics, responses, Opposition stages/pipelines, standardized rebuttal tasks, AI judges, and AI judgments. Reference fields use existing catalog records. All entries go through the same backend validation as JSON imports.
-- **JSON import:** paste or select a local JSON file. A batch has up to 500 records and 2 MB. Use smaller batches (40 AI votes is a useful default) on restrictive query quotas. No partial import: validation errors, duplicate IDs/sample numbers, or invalid references roll back the whole batch.
-- **Display editor:** select a response and update only `display_output`. Raw output is read-only. Every display revision is retained; already-issued Arena comparisons keep their snapshots.
-- **Catalog:** activate/deactivate systems and topics. Inactive entries are not assigned to new judges; old votes remain in historical results. Metadata can also be updated with the protected system/topic PUT endpoints.
-- **Ranking weights:** configure each task’s metric weights and the combined Human/AI shares. Each group must sum to 100%. Changes immediately affect derived rankings.
-- **Administrators:** list every account with its type and join date, and grant or revoke administrator access. The last administrator cannot be demoted.
+### Next Run scheduling
 
-Top-level import keys (all optional arrays):
+Choose **All systems** for global coverage balancing, or an active system to restrict recommendations. The selection persists in session storage. **Another option** respects that filter and excludes the current option when alternatives exist. An inactive or otherwise unavailable selected system produces an explicit empty state.
 
-```json
-{
-  "systems": [],
-  "topics": [],
-  "standardized_rebuttal_tasks": [],
-  "responses": [],
-  "opposition_predictions": [],
-  "opposition_rebuttals": [],
-  "opposition_preps": [],
-  "ai_judges": [],
-  "ai_votes": []
-}
+Government Case and Opposition Case are independent active-system × active-topic tasks. Each receives only the motion. Recommendations show system configuration, task, motion, sample, and the fully rendered prompt. Copy it, start the run, execute it externally, paste the raw response, and save. The backend snapshots the latest rendered prompt and revision when **Start this run** is clicked. Use the started run's Copy prompt action if a template changed after the recommendation appeared.
+
+Open claims count as coverage and survive reload. Uncovered combinations come first; then the least-covered combinations are balanced by system, topic, pair, and side. Samples stay unique across concurrent tabs and direct imports. Claim resolution and response insertion are one atomic transaction. A failed import keeps the claim open. Claims snapshot system/topic metadata as well as the exact prompt, so in-progress work remains inspectable after a catalog change.
+
+### Versioned prompts
+
+[`prompts/government.txt`](prompts/government.txt) and [`prompts/opposition.txt`](prompts/opposition.txt) are the only default prompt sources. The Worker bundles them as text and seeds version 1 into D1 on first prompt/scheduler access. Runtime edits insert immutable `prompt_revisions` rows. Required `{MOTION}` placeholders are replaced in one pass; missing and unknown placeholders are rejected. Prompt revision edits cannot mutate started claims or historical response prompts.
+
+No Rebuttal prompt is seeded. Its wording is deferred. The provisional template contract accepts `{MOTION}`, `{GOVERNMENT_CASE}`, and `{OPPOSITION_CASE}`; that contract can be changed when the final prompt is supplied. Saving a valid Rebuttal template enables otherwise executable Rebuttal recommendations.
+
+### Structured results and optional Gemini
+
+Raw output stays exact and canonical, including whitespace. After the response import commits, deterministic parsing recognizes the supplied case headings and validates [`shared/cases.ts`](shared/cases.ts). Derived JSON and revision history live separately in `structured_cases` and `structured_case_revisions`. Failure never rolls back or deletes the benchmark response. Next Run, Display Editor, and Rebuttal Pool expose extraction status, retry, and manual JSON correction.
+
+The parser is conservative: missing core arguments, unrecognized preambles, and ambiguous headings trigger fallback instead of guessing. When Gemini is configured, the server tries these models in order:
+
+1. `gemini-3.8-flash`
+2. `gemini-3.7-flash`
+3. `gemini-3.6-flash`
+4. `gemini-3.5-flash-lite`
+
+These are the requested model IDs. Availability depends on the Gemini API/account; unavailable models are recorded as failures and the next model is tried. No different model is silently substituted. `GEMINI_EXTRACTOR_MODELS` can override the comma-separated IDs. Each attempt has a six-second deadline; automatic fallback runs after saving via `waitUntil`. For large bulk imports, failed cases can be retried individually. Extraction is instructed to copy verbatim, with strict JSON validation and a mechanical wording-preservation check. It must not improve, fact-check, paraphrase, or invent debate content. Review derived data where needed.
+
+To enable Gemini in production, create a key in [Google AI Studio](https://aistudio.google.com/apikey), then run:
+
+```sh
+npx wrangler secret put GEMINI_API_KEY
 ```
 
-See [`worker/validation.ts`](worker/validation.ts) for the authoritative field schemas and [`demo/benchmark.json`](demo/benchmark.json) for a complete importable example. The admin API accepts the JSON body at `POST /api/admin/import`. Supply `Content-Type: application/json` and the `Authorization: Bearer <session>` token of an administrator account.
+Paste the key into Wrangler's prompt. For local use, add `GEMINI_API_KEY=your-key` to the ignored `.dev.vars` file and restart `npm run dev`. Never use `VITE_*` for this key. With no key, parsing and manual correction still work. The Worker deployment workflow preserves separately configured secrets.
 
-### Next run scheduling
+Arena uses the structured representation as readable headings, paragraphs, and subtle separation when it can be safely blinded. Missing/invalid structure falls back to validated display text. Explicit display edits take precedence. Each assignment snapshots exactly the rendered text and shared context shown to its judge; subsequent edits never rewrite the assignment.
 
-The **Next run** tab recommends exactly one run to execute next and shows only what is needed to execute it: the system configuration, the motion and category, the side and task, the sample number, the prompt earlier systems received for that motion and task, the shared Government case for a standardized rebuttal, and the stage text an Opposition continuation builds on. It does not explain its choice.
+### Frozen Rebuttal Pool
 
-Candidates are derived from the database on every request: active systems x active topics x the tasks that pair can actually run now. Government and prediction are always available; a standardized rebuttal appears only where the topic has a shared case; a rebuttal appears only for a prediction that has none yet; a full preparation appears only for a linked prediction and fresh-context rebuttal. A recommendation is therefore always importable, and one always exists while an active system and an active topic do.
+Admins select exact Government response IDs from the pool list. Freezing stores the response ID, topic, administrator, time, and a compact case snapshot. Neither the source nor its frozen content changes when rankings, extraction, or display text change. An inactive response or missing structured case is clearly marked unavailable; another source is never substituted.
 
-Ordering is recomputed from current coverage, never from a fixed list. Repeating a covered combination outweighs every other term, so untested combinations come first, and once everything has coverage the least-tested combination comes first. The remaining terms, in decreasing weight, are the model/topic pair, the model's total runs, the topic's total runs, the Government/Opposition balance within that model, and the same balance across the dataset. Sides are compared by density, because Government has one slot per topic and Opposition has several. A bounded random term distributes equally useful runs instead of always returning the same database row; **Another option** simply asks again.
+A future Rebuttal run requires an active topic and tested system, a Rebuttal prompt revision, an available frozen Government source on that topic, and that tested system's own structured Opposition response on the topic. Government can come from another system. The scheduler chooses the earliest available Opposition sample deterministically. Every tested system is eligible to answer the same frozen sources.
 
-Starting a run claims it. A claim is an in-progress run: it counts as coverage, reserves its sample number, and holds the stage it continues out of other recommendations until its response arrives or it is released. A unique index over open claims keeps two tabs from reserving the same sample. Claims persist, so a run started before the page was closed is still waiting under **In progress**.
+[`coreCaseForRebuttal`](shared/cases.ts) centrally derives only contention `title`, `claim`, `warrants`, and `impact`. Comparative analysis, likely responses, defenses, round priorities, and system identity are excluded. Claims and responses retain immutable source IDs and exact compact input snapshots. Rebuttal Arena and AI comparisons require the same topic and frozen Government response and different tested systems; each system may use its own Opposition case.
 
-Recording the response imports it through the same `bulkImport` path as every other record: blinding, provenance, pipeline relationships, and sample uniqueness are validated identically, and a rejected response leaves the run in progress. The response ID is derived from the run, the display text starts as a copy of the raw output until it is edited, and the provenance fields default to the stored system configuration. Nothing here calls a model; runs are still executed elsewhere and pasted back.
+### Imports, provenance, and history
 
-### Run provenance and Opposition
+Manual Entry handles systems, topics, independent cases, AI judges, and votes. JSON imports accept up to 500 records / 2 MB atomically; split large vote batches where appropriate. Main keys are `systems`, `topics`, `responses`, `ai_judges`, and `ai_votes`. See [`worker/validation.ts`](worker/validation.ts) and [`demo/benchmark.json`](demo/benchmark.json).
 
-Every run stores `id`, `system_id`, `topic_id`, `task`, `raw_output`, `display_output`, `prompt`, ISO UTC `generated_at`, `interface`, nullable `reasoning`, `configuration`, optional `duration_ms`, positive `sample`, and `context_id`. The system is a **configuration**, not a model: two interfaces for the same model are separate IDs. Sample uniqueness is per system/topic/task/standardized-case. Import another sample to correct provenance; a database trigger prevents mutation of the raw run fields.
+Every run retains system, topic, task, exact prompt/raw output, time, interface, reasoning, configuration, duration, sample, and context. Database triggers protect provenance. Display and structure revisions are separate. New Rebuttals additionally require Government/Opposition source IDs and compact input snapshots; prefer Next Run to assemble these safely.
 
-`raw_output` is stored exactly as supplied, including whitespace. Clean `display_output` offline to remove citations, source sections, tool traces/metadata, and identifying clues. The server removes common citation/HTML/source artifacts and rejects known system/provider/model/interface phrases. This is a defensive floor, not a semantic anonymity guarantee: administrators must inspect the text before use. Tool-enabled source runs remain allowed. The renderer only supports paragraphs, headings, bold text, and lists; it never executes imported HTML or loads imported links/images.
+Prediction, Standardized Rebuttal, Full Opposition, and old pipeline Rebuttals remain stored but are excluded from new scheduling, active rankings, and Arena filters. Historical relationship arrays remain accepted for archival imports; they are not offered in normal Manual Entry. Legacy assignments and vote snapshots remain accessible in judgment history.
 
-Opposition preparation is explicit:
-
-1. Import a `prediction` run and an `opposition_predictions` record referencing it, in one batch.
-2. In a **fresh external thread/context**, obtain a `rebuttal` run. Import it with `opposition_rebuttals: [{ response_id, prediction_response_id, fresh_context: 1 }]`. Context IDs must differ and topics must match. The server validates the claimed provenance; it cannot independently verify how an external tool opened its context.
-3. Import a `full_opposition` run representing the complete pipeline configuration and any constructive material, plus `opposition_preps: [{ response_id, prediction_response_id, rebuttal_response_id }]`. The response display stores constructive material; the Arena assembles the complete prediction + fresh-context rebuttal + constructive text. If there is no constructive material, record “No additional constructive material.”
-
-Stages may come from different systems. For cross-system pipelines, use a distinct system configuration identifying that complete pipeline; the ranking attributes the full prep to that configuration. Rebuttal-only stage runs are provenance records, not an additional Arena category. The three Opposition Arena types are prediction, standardized rebuttal, and full prep.
-
-For standardized rebuttal, create a task with `id`, `topic_id`, `title`, `case_text`, and an optional `government_response_id`. Its case text is the exact shared case; when a Government response is referenced, it must have the same topic and Government task. Each standardized rebuttal run references `standardized_task_id`; different shared cases are never paired. The response prompt records exactly what each system received. Shared case text is displayed above both responses.
+Migration `0005_three_capabilities.sql` rebuilds the constrained response/claim tables while retaining historical rows and checks actual foreign-key integrity before committing. Legacy open claims without prompt snapshots are retained as released history; restart those runs with an explicit prompt version.
 
 ### AI judgments
 
@@ -194,7 +195,7 @@ Votes use `2` = A much better, `1` = A better, `0` = tie, `-1` = B better, `-2` 
 
 ## Matchmaking and reconstructability
 
-Matchups are unique canonical pairs of different-system responses with the same topic/task and standardized case. A/B swaps do not make a new pair. Every assignment has a secure random ID, orientation, full text snapshots, shared-case snapshot, user, and timestamp. A unique `(user_id, matchup_id)` constraint atomically prevents duplicates across tabs, including abandoned comparisons. Reloading or requesting another matchup consumes a new pair; only voting history reopens a judged pair.
+Matchups are unique canonical pairs of different-system responses with the same topic/task and, for Rebuttal, frozen Government source. A/B swaps do not make a new pair. Every assignment has a secure random ID, orientation, full text snapshots, shared-case snapshot, user, and timestamp. A unique `(user_id, matchup_id)` constraint atomically prevents duplicates across tabs, including abandoned comparisons. Reloading or requesting another matchup consumes a new pair; only voting history reopens a judged pair.
 
 Candidate priority combines globally under-judged system pairs, under-judged individual response pairs, the user’s per-system exposure, a penalty for any of the last three topics, and random exploration. All filters are applied before selection. Inactive topics/systems/runs are excluded. A/B randomization uses Web Crypto. There is no speculative next-match prefetch that could consume unseen assignments.
 
@@ -210,20 +211,21 @@ Five-level preferences are fractional pairwise outcomes: `[0, 0.25, 0.5, 0.75, 1
 
 - **Overall Preference:** only the required overall comparison.
 - **Individual metric:** only non-skipped votes for that metric.
-- **Weighted Benchmark:** separate pairwise observations for available metrics, weighted by the backend’s task-specific weights. Weights renormalize over judged metrics on that ballot. All metrics together contribute at most one ballot’s likelihood mass; a six-metric ballot is not six independent comparisons.
+- **Weighted Benchmark:** separate pairwise observations for available metrics, weighted by the backend’s task-specific weights. Weights renormalize over judged metrics on that ballot. All metrics together contribute at most one ballot’s likelihood mass; a five-metric ballot is not five independent comparisons.
 - **Personal profiles:** query only the selected user’s human votes. Global AI/human votes never leak into the personal calculation. These are not user-defined weights.
 - **Combined:** normalize the human and AI likelihood masses to configured shares (default 50/50). Downweight the larger source instead of multiplying the smaller source into false precision. If a source is absent, the result uses the available nonzero-weight source and reports the missing source. Human subgroup filters affect only human observations; AI judge selection affects only AI observations.
 
 Default task weights:
 
-| Metric | Government | Prediction | Standard rebuttal | Full Opposition |
-| --- | ---: | ---: | ---: | ---: |
-| Argument Strength | 45% | 30% | 30% | 30% |
-| Evidence / Examples | 20% | 10% | 15% | 10% |
-| Creativity | 20% | 15% | 10% | 10% |
-| Strategic Prioritization | 15% | 15% | 15% | 10% |
-| Threat Identification | — | 30% | — | 15% |
-| Rebuttal Quality | — | — | 30% | 25% |
+| Metric | Government Case | Opposition Case | Rebuttal |
+| --- | ---: | ---: | ---: |
+| Argument Strength | 45% | 45% | 30% |
+| Evidence / Examples | 20% | 20% | 15% |
+| Creativity | 20% | 20% | 10% |
+| Strategic Prioritization | 15% | 15% | 15% |
+| Rebuttal Quality | — | — | 30% |
+
+Threat Identification is excluded from active scoring and filters.
 
 Reported values:
 
@@ -252,7 +254,11 @@ All routes have an `/api` prefix. Every route uses the same `Authorization: Bear
 | `GET /systems`, `GET /systems/:id` | Public | Metadata and performance only |
 | `GET /compare/:a/:b`, `GET /ai-judges`, `GET /stats`, `GET /health` | Public | Comparisons and catalog summaries |
 | `GET /admin/catalog`, `POST /admin/import` | Admin | Private catalog, accounts and roles / atomic imports |
-| `GET /admin/next-run` | Admin | Recommended run and the in-progress queue |
+| `GET /admin/next-run?system=&exclude=` | Admin | Recommended run and the in-progress queue |
+| `GET /admin/prompts`, `POST /admin/prompts` | Admin | List history / create prompt revision |
+| `GET /admin/rebuttal-pool`, `POST /admin/rebuttal-pool` | Admin | Inspect sources / freeze exact `response_ids` |
+| `GET /admin/responses/:id/structure`, `PUT /admin/responses/:id/structure` | Admin | Inspect / correct derived JSON |
+| `POST /admin/responses/:id/structure/retry` | Admin | Retry deterministic and optional model extraction |
 | `POST /admin/runs` | Admin | Claim a recommended run |
 | `POST /admin/runs/:id/response` | Admin | Import the response for an in-progress run |
 | `POST /admin/runs/:id/release` | Admin | Return an in-progress run to the queue |
@@ -261,11 +267,11 @@ All routes have an `/api` prefix. Every route uses the same `Authorization: Bear
 | `PUT /admin/weights` | Admin | Complete metric and source weight configuration |
 | `PATCH /admin/users/:id` | Admin | Grant or revoke administrator access on an account |
 
-Leaderboard query values: `source=human|ai|combined`; `subgroup=all|Parliamentary Debater|Non-Parliamentary Debater`; `category=all|Serious|Informal`; `task=all|government|opposition|prediction|standardized_rebuttal|full_opposition`; `metric=overall|weighted|argument|evidence|creativity|strategy|threat|rebuttal`; optional `judge=<id>`. Invalid enums return 400.
+Leaderboard query values: `source=human|ai|combined`; `subgroup=all|Parliamentary Debater|Non-Parliamentary Debater`; `category=all|Serious|Informal`; `task=all|government|opposition|rebuttal`; `metric=overall|weighted|argument|evidence|creativity|strategy|rebuttal`; optional `judge=<id>`. Invalid enums return 400.
 
 ## Verification and MVP boundaries
 
-Tests cover registration/login, unique usernames, PIN rules, hashing/sessions, the administrator bootstrap migration, admin authorization (including that the retired admin header grants nothing), role changes and the last-administrator guard, rate limits, CORS, duplicate and concurrent matchmaking, A/B randomization, category/task filters, full Opposition assembly, standardized shared cases, required overall votes, skips, edit ownership and audit history, immutable raw output, snapshot preservation, import rollback/references/duplicates, cross-system pipelines, multiple samples, run scheduling priorities and pipeline gating, run claims and response entry, AI versions, personal isolation, source weighting, Bradley–Terry, score conversions, and confidence intervals. Browser review covers desktop/mobile rendering and real local UI interactions.
+Tests cover auth, imports, immutable provenance, prompt rendering/version snapshots, system filters, deterministic extraction and model fallback, manual revisions, frozen source fairness, Rebuttal relationships, concurrent claims/saves, historical-task exclusion, populated migration integrity, and ranking statistics. Integration tests forbid real model network requests; extractor tests inject mocked Gemini responses.
 
 This is a small-corpus MVP. Ranking fitting and import reference validation currently load the selected observations/catalog into memory; the full Hessian inversion is cubic in the number of systems. Before scaling to a large public benchmark, add incremental sufficient-statistic aggregation, bounded admin catalog pagination, and scheduled pruning of expired rate-limit rows. Matchup construction is quadratic per topic/task. Application-level blinding does not prevent inference attacks against tiny datasets; public live results and self-selected judge populations have methodological limits. Confidence intervals do not account for correlated judges, repeated topic content, or systematic dataset selection bias.
 

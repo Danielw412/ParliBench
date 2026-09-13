@@ -77,7 +77,7 @@ function Home({ stats }: { stats: Stats | null }) {
       <h2>How it works</h2>
       <dl>
         <div><dt>Blind comparison</dt><dd>Judges read two complete responses to the same motion. System names stay hidden until after the vote.</dd></div>
-        <div><dt>Six metrics</dt><dd>Argument strength, evidence, creativity, and strategic prioritization for every task. Opposition tasks add threat identification and rebuttal quality. Any metric can be skipped.</dd></div>
+        <div><dt>Five metrics</dt><dd>Argument strength, evidence, creativity, and strategic prioritization for each case task. Rebuttal adds Rebuttal Quality. Any metric can be skipped.</dd></div>
         <div><dt>Pairwise ranking</dt><dd>Bradley-Terry ratings from human and AI judgments, reported with 95% intervals. Overall Preference and the Weighted Benchmark are ranked separately.</dd></div>
         <div><dt>Offline responses</dt><dd>Every response and AI judgment is generated elsewhere and imported. This site never calls a model.</dd></div>
       </dl>

@@ -16,7 +16,7 @@ export function Select({ label, value, onChange, options }: { label: string; val
   return <label className="select-field"><span>{label}</span><select value={value} onChange={e => onChange(e.target.value)}>{options.map(([v, text]) => <option key={v} value={v}>{text}</option>)}</select></label>;
 }
 export const categoryOptions: [string, string][] = [['all', 'All topics'], ['Serious', 'Serious'], ['Informal', 'Informal']];
-export const taskOptions: [string, string][] = [['all', 'All tasks'], ['government', 'Government'], ['opposition', 'Opposition (all)'], ['prediction', 'Opposition Prediction'], ['standardized_rebuttal', 'Standardized Rebuttal'], ['full_opposition', 'Full Opposition Prep']];
+export const taskOptions: [string,string][] = [['all','All tasks'],...Object.entries(TASK_LABELS)];
 export const metricOptions: [string, string][] = [['overall', 'Overall Preference'], ['weighted', 'Weighted Benchmark'], ...Object.entries(METRIC_LABELS)];
 // Sparse or disconnected data is flagged; established estimates need no label.
 export function Confidence({ row }: { row: RankingRow }) { return row.low_confidence ? <span className="confidence">Low confidence</span> : null; }
@@ -37,7 +37,7 @@ export function VoteScale({ name, value, onChange, skip = false, disabled = fals
 export function ResponseText({ text }: { text: string }) {
   const inline = (line: string) => line.split(/(\*\*[^*]+\*\*)/g).map((part, i) => part.startsWith('**') ? <strong key={i}>{part.slice(2, -2)}</strong> : part);
   return <div className="response-text">{text.split(/\n\s*\n/).map((block, i) => {
-    if (/^#{1,4}\s/.test(block)) return <h3 key={i}>{block.replace(/^#{1,4}\s/, '')}</h3>;
+    if (/^#{1,4}\s/.test(block)) return block.startsWith('### ') ? <h4 key={i}>{block.replace(/^#{1,4}\s/,'')}</h4> : <h3 key={i}>{block.replace(/^#{1,4}\s/,'')}</h3>;
     if (/^[-*]\s/m.test(block)) return <ul key={i}>{block.split('\n').map((line, j) => <li key={j}>{inline(line.replace(/^[-*]\s/, ''))}</li>)}</ul>;
     return <p key={i}>{inline(block)}</p>;
   })}</div>;

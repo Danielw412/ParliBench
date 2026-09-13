@@ -1,23 +1,24 @@
-export const METRICS = ['argument', 'evidence', 'creativity', 'strategy', 'threat', 'rebuttal'] as const;
+export const METRICS = ['argument', 'evidence', 'creativity', 'strategy', 'rebuttal'] as const;
+export const HISTORICAL_METRICS = [...METRICS, 'threat'] as const;
 export type Metric = typeof METRICS[number];
 export const METRIC_LABELS: Record<Metric, string> = {
   argument: 'Argument Strength', evidence: 'Evidence / Examples', creativity: 'Creativity',
-  strategy: 'Strategic Prioritization', threat: 'Threat Identification', rebuttal: 'Rebuttal Quality',
+  strategy: 'Strategic Prioritization', rebuttal: 'Rebuttal Quality',
 };
 export const METRIC_HELP: Record<Metric, string> = {
   argument: 'Logic, warrants, mechanisms, impacts, and robustness.', evidence: 'Relevant, accurate facts, examples, and analogies.',
   creativity: 'Non-obvious arguments that are useful in the round.', strategy: 'Identifies and prioritizes the most important clashes.',
-  threat: 'Predicts the strongest Government arguments.', rebuttal: 'Directly answers the opposing case with persuasive analysis.',
+  rebuttal: 'Directly answers the opposing case with persuasive analysis.',
 };
-export const TASKS = ['government', 'prediction', 'standardized_rebuttal', 'full_opposition'] as const;
+export const TASKS = ['government', 'opposition', 'rebuttal'] as const;
 export type Task = typeof TASKS[number];
-export const TASK_LABELS: Record<Task, string> = { government: 'Government', prediction: 'Opposition Prediction', standardized_rebuttal: 'Standardized Rebuttal', full_opposition: 'Full Opposition Prep' };
+export const HISTORICAL_TASKS = ['prediction', 'standardized_rebuttal', 'full_opposition'] as const;
+export const TASK_LABELS: Record<Task, string> = { government: 'Government Case', opposition: 'Opposition Case', rebuttal: 'Rebuttal' };
 export function applicableMetrics(task: string): Metric[] {
-  if (task === 'government') return METRICS.slice(0, 4);
-  if (task === 'prediction') return [...METRICS.slice(0, 4), 'threat'];
-  if (task === 'standardized_rebuttal') return [...METRICS.slice(0, 4), 'rebuttal'];
-  return [...METRICS];
+  return task === 'rebuttal' ? [...METRICS] : METRICS.slice(0, 4);
 }
+// Shared SQL predicate excludes old pipeline rebuttals, which used the same task identifier.
+export const activeResponseSQL = (alias: string) => `(${alias}.task IN ('government','opposition') OR (${alias}.task='rebuttal' AND ${alias}.government_source_response_id IS NOT NULL AND ${alias}.opposition_source_response_id IS NOT NULL))`;
 export type VoteValue = -2 | -1 | 0 | 1 | 2;
 export const VOTE_OPTIONS = [{ value: 2, label: 'A much better', short: 'A ++' }, { value: 1, label: 'A better', short: 'A +' }, { value: 0, label: 'Tie', short: 'Tie' }, { value: -1, label: 'B better', short: 'B +' }, { value: -2, label: 'B much better', short: 'B ++' }] as const;
 export type UserType = 'Parliamentary Debater' | 'Non-Parliamentary Debater';
@@ -36,17 +37,16 @@ export interface ArenaMatch {
 }
 export interface BallotInput { overall: VoteValue; metrics: Partial<Record<Metric, VoteValue | null>>; }
 export interface Judgment extends ArenaMatch { overall: VoteValue; metric_votes: Partial<Record<Metric, VoteValue | null>>; updated_at: string; }
-// A run is one execution of one system configuration on one motion. Rebuttal is a pipeline stage
-// rather than an Arena category, so it is a run to schedule but never a task to rank.
-export const RUN_TASKS = [...TASKS, 'rebuttal'] as const;
-export type RunTask = typeof RUN_TASKS[number];
-export const RUN_TASK_LABELS: Record<RunTask, string> = { ...TASK_LABELS, rebuttal: 'Opposition rebuttal (pipeline stage)' };
+export const RUN_TASKS = TASKS;
+export type RunTask = Task;
+export const RUN_TASK_LABELS = TASK_LABELS;
 export const taskSide = (task: string) => task === 'government' ? 'Government' : 'Opposition';
-export interface RunSlot { system_id: string; topic_id: string; task: RunTask; standardized_task_id: string | null; prediction_response_id: string | null; rebuttal_response_id: string | null; }
+export interface RunSlot { system_id: string; topic_id: string; task: RunTask; government_source_response_id: string | null; opposition_source_response_id: string | null; }
+export interface PromptRevision { id: string; task: Task; version: number; template: string; created_at: string; created_by: string | null; }
 export interface RunPlan extends RunSlot {
   sample: number; system: SystemInfo; topic: { id: string; motion: string; category: string };
-  standardized_case: { id: string; title: string; case_text: string } | null;
-  upstream: { label: string; response_id: string; text: string }[]; prompt_reference: string | null;
+  rendered_prompt: string; prompt_revision_id: string; prompt_version: number;
+  upstream: { label: string; response_id: string; text: string }[];
 }
 export interface RunClaim extends RunPlan { claim_id: string; claimed_at: string; }
-export interface RunBoard { recommendation: RunPlan | null; queue: RunClaim[]; }
+export interface RunBoard { recommendation: RunPlan | null; queue: RunClaim[]; systems: SystemInfo[]; }

@@ -472,3 +472,9 @@ main{min-height:65vh}
   .arena-gate h1{font-size:30px}
 }
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;scroll-behavior:auto!important}}
+
+/* Structured cases follow the existing document typography. */
+.response-text h4 { margin: 1.5rem 0 .5rem; font-size: .92rem; font-weight: 700; }
+.pool-source { padding: 1.5rem 0; border-bottom: 1px solid var(--line, #deded9); }
+.structure-editor { margin: 1.25rem 0; }
+.run-detail pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 32rem; overflow-y: auto; }

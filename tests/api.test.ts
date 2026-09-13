@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Miniflare, Log, LogLevel, convertV4MiniflareOptions } from 'miniflare';
 import { build } from 'esbuild';
 import { readFile, readdir } from 'node:fs/promises';
-import { createDemoData } from '../scripts/demo-data';
+import { createHistoricalDemoData as createDemoData } from '../scripts/demo-data';
 import type { AccountRow, ArenaMatch, Judgment, Leaderboard, User } from '../shared/domain';
 import { sanitizeDisplay } from '../worker/sanitize';
 let mf:Miniflare, db:D1Database;
@@ -19,13 +19,13 @@ async function parsed<T>(path:string,method='GET',value?:unknown,token?:string,a
   if(!response.ok) throw new Error(`${response.status} ${JSON.stringify(result)}`); return result as T;
 }
 beforeAll(async()=> {
-  const bundle=await build({entryPoints:['worker/index.ts'],bundle:true,write:false,format:'esm',platform:'browser',target:'es2022'});
+  const bundle=await build({entryPoints:['worker/index.ts'],bundle:true,loader:{'.txt':'text'},write:false,format:'esm',platform:'browser',target:'es2022'});
   mf=new Miniflare(convertV4MiniflareOptions({modules:true,script:bundle.outputFiles[0].text,compatibilityDate:'2026-09-11',compatibilityFlags:['nodejs_compat'],d1Databases:['DB'],bindings:{PIN_PEPPER:'test-pin-pepper-longer-than-thirty-two-characters',ALLOWED_ORIGINS:'http://localhost:5173',ENVIRONMENT:'test'},log:new Log(LogLevel.ERROR),outboundService:()=>{throw new Error('Outbound requests are forbidden: benchmark must never call AI APIs');}}));
   db=await mf.getD1Database('DB') as unknown as D1Database;
   async function migrate(files:string[]) {
     for (const migration of files) {
       const sql=(await readFile(`migrations/${migration}`,'utf8')).replace(/^--.*$/gm,'');
-      const statements=sql.split(/;\s*(?=(?:CREATE|INSERT|PRAGMA|ALTER|UPDATE)\b|$)/i).filter(s=>s.trim());
+      const statements=sql.split(/;\s*(?=(?:CREATE|INSERT|PRAGMA|ALTER|UPDATE|DROP)\b|$)/i).filter(s=>s.trim());
       await db.batch(statements.map(s=>db.prepare(s)));
     }
   }
@@ -60,14 +60,21 @@ describe('Worker + real local D1 integration',()=> {
     expect(JSON.stringify(first)).not.toMatch(/demo-atlas|Atlas|Cedar|raw_output|configuration|system_id|Sources:/);
   });
   it('rejects invalid filters instead of silently broadening the selection',async()=>{expect((await request('/arena/next?task=nonsense','POST',undefined,alice.token)).status).toBe(400);});
-  it('always includes the shared case for standardized rebuttal',async()=> { const r=await parsed<{matchup:ArenaMatch}>('/arena/next?task=standardized_rebuttal','POST',undefined,bob.token); expect(r.matchup.context).toContain('shared Government case'); expect(r.matchup.metrics).toContain('rebuttal'); expect(r.matchup.metrics).not.toContain('threat'); });
-  it('assembles full Opposition including both stages and constructive text',async()=> { const r=await parsed<{matchup:ArenaMatch}>('/arena/next?task=full_opposition','POST',undefined,bob.token); expect(r.matchup.a).toContain('Government argument predictions'); expect(r.matchup.a).toContain('Rebuttals · fresh context'); expect(r.matchup.a).toContain('Opposition constructive'); expect(r.matchup.metrics).toHaveLength(6); });
+  it.each(['prediction','standardized_rebuttal','full_opposition'])('retires %s from active Arena and rankings',async(task)=> {
+    expect((await request(`/arena/next?task=${task}`,'POST',undefined,bob.token)).status).toBe(400);
+    expect((await request(`/leaderboard?task=${task}`)).status).toBe(400);
+  });
+  it('keeps legacy pipeline rebuttals out of the active Rebuttal category',async()=> {
+    expect((await parsed<{matchup:null}>('/arena/next?task=rebuttal','POST',undefined,bob.token)).matchup).toBeNull();
+    expect((await parsed<Leaderboard>('/leaderboard?task=rebuttal&source=ai')).comparisons).toBe(0);
+    expect((await parsed<Leaderboard>('/leaderboard?source=ai')).comparisons).toBe((await parsed<Leaderboard>('/leaderboard?task=government&source=ai')).comparisons);
+  });
   it('prevents duplicate underlying matchups, even across simultaneous requests',async()=> {
-    const results=await Promise.all(Array.from({length:12},()=>parsed<{matchup:ArenaMatch|null}>('/arena/next?category=Informal&task=prediction','POST',undefined,alice.token)));
+    const results=await Promise.all(Array.from({length:12},()=>parsed<{matchup:ArenaMatch|null}>('/arena/next?category=Informal&task=government','POST',undefined,alice.token)));
     const issued=results.flatMap(r=>r.matchup?[r.matchup.id]:[]);
     const assignments=await db.prepare('SELECT matchup_id FROM arena_assignments WHERE user_id=?').bind(alice.user.id).all<{matchup_id:string}>();
     expect(issued.length).toBeLessThanOrEqual(6); expect(new Set(assignments.results.map(a=>a.matchup_id)).size).toBe(assignments.results.length);
-    expect((await parsed<{matchup:null}>('/arena/next?category=Informal&task=prediction','POST',undefined,alice.token)).matchup).toBeNull();
+    expect((await parsed<{matchup:null}>('/arena/next?category=Informal&task=government','POST',undefined,alice.token)).matchup).toBeNull();
   });
   it('uses both random A/B orientations',async()=> {
     for(let n=0;n<18;n++) await parsed('/arena/next?task=government','POST',undefined,bob.token);

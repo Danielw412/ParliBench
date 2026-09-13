@@ -6,6 +6,7 @@
   "compatibility_flags": [
     "nodejs_compat"
   ],
+  "rules": [{ "type": "Text", "globs": ["**/*.txt"], "fallthrough": true }],
   "workers_dev": true,
   "preview_urls": false,
   "secrets": {

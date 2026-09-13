@@ -1,3 +1,5 @@
+import { benchmarkAdmin } from './benchmark-admin';
+import { extractImportedCases, type ExtractorEnv } from './cases';
 import { z, ZodError } from 'zod';
 import { credentials, registration, filterSchema, id, systemSchema, topicSchema } from './validation';
 import { createSession, digest, equalSecret, hashPin, rateLimit, requireAdmin, requireUser } from './auth';
@@ -9,7 +11,7 @@ import { claimRun, recordRun, releaseRun, runBoard } from './scheduler';
 import { validateBlindText } from './sanitize';
 import { applicableMetrics, TASKS, type SystemInfo, type User } from '../shared/domain';
 
-export type AppEnv = Cloudflare.Env & { PIN_PEPPER: string };
+export type AppEnv = Cloudflare.Env & ExtractorEnv & { PIN_PEPPER: string };
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 async function body(request: Request): Promise<unknown> {
   if (!request.headers.get('Content-Type')?.includes('application/json')) throw new HttpError(415, 'Expected application/json');
@@ -25,7 +27,7 @@ async function body(request: Request): Promise<unknown> {
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
   try { return JSON.parse(new TextDecoder().decode(bytes)); } catch { throw new HttpError(400, 'Invalid JSON'); }
 }
-async function route(request: Request, env: AppEnv): Promise<Response> {
+async function route(request: Request, env: AppEnv, ctx: ExecutionContext): Promise<Response> {
   const db = env.DB, url = new URL(request.url), path = url.pathname.replace(/\/$/, ''), method = request.method;
   const f = () => filterSchema.parse(Object.fromEntries(url.searchParams));
   if (path === '/api/health' && method === 'GET') {
@@ -128,29 +130,38 @@ async function route(request: Request, env: AppEnv): Promise<Response> {
   if (path.startsWith('/api/admin')) {
     await rateLimit(db, `admin:${await digest(request.headers.get('CF-Connecting-IP') || 'local')}`, 60, 60000);
     const me = await requireAdmin(request, db);
+    const handled=await benchmarkAdmin(db,path,method,()=>body(request),me.id,env);
+    if (handled !== undefined) return json(handled);
     if (path === '/api/admin/catalog' && method === 'GET') {
       const [systems, topics, responses, standards, judges, weights, source, users] = await Promise.all([
         rows(db, 'SELECT * FROM systems'), rows(db, 'SELECT * FROM topics'),
-        rows(db, 'SELECT id,system_id,topic_id,task,sample,display_version FROM responses ORDER BY id'),
+        rows(db, 'SELECT r.id,r.system_id,r.topic_id,r.task,r.sample,r.display_version,c.status extraction_status FROM responses r LEFT JOIN structured_cases c ON c.response_id=r.id ORDER BY r.id'),
         rows(db, 'SELECT * FROM standardized_rebuttal_tasks'), rows(db, 'SELECT * FROM ai_judges'),
-        rows(db, 'SELECT * FROM benchmark_weights'), one(db, 'SELECT human,ai FROM source_weights WHERE id=1'),
+        rows(db, "SELECT * FROM benchmark_weights WHERE task IN ('government','opposition','rebuttal') AND metric<>'threat'"), one(db, 'SELECT human,ai FROM source_weights WHERE id=1'),
         rows(db, 'SELECT id,username,user_type,created_at,is_admin FROM users ORDER BY is_admin DESC,username COLLATE NOCASE'),
       ]);
       return json({ systems, topics, responses, standards, judges, weights, source, users });
     }
     if (path === '/api/admin/import' && method === 'POST') {
-      try { return json(await bulkImport(db, await body(request)), 201); }
+      try {
+        const input=await body(request); const result=await bulkImport(db,input);
+        if (env.GEMINI_API_KEY) {
+          const ids=(input as {responses?:{id:string;task:string}[]}).responses?.filter(r=>['government','opposition'].includes(r.task)).map(r=>r.id) || [];
+          ctx.waitUntil(extractImportedCases(db,ids,env));
+        }
+        return json(result,201);
+      }
       catch (error) {
         if (error instanceof ZodError || error instanceof HttpError) throw error;
         throw new HttpError(400, `Import rejected: ${String(error instanceof Error ? error.message : error).slice(0, 500)}`);
       }
     }
-    if (path === '/api/admin/next-run' && method === 'GET') return json(await runBoard(db));
+    if (path === '/api/admin/next-run' && method === 'GET') return json(await runBoard(db,url.searchParams.get('system') ? id.parse(url.searchParams.get('system')) : undefined,url.searchParams.get('exclude') || undefined));
     if (path === '/api/admin/runs' && method === 'POST') return json(await claimRun(db, await body(request)), 201);
     const run = path.match(/^\/api\/admin\/runs\/([a-zA-Z0-9-]+)\/(response|release)$/);
     if (run && method === 'POST') {
       if (run[2] === 'release') return json(await releaseRun(db, run[1]));
-      try { return json(await recordRun(db, run[1], await body(request)), 201); }
+      try { const result=await recordRun(db,run[1],await body(request)); if (env.GEMINI_API_KEY) ctx.waitUntil(extractImportedCases(db,[result.response_id],env)); return json(result,201); }
       catch (error) {
         if (error instanceof ZodError || error instanceof HttpError) throw error;
         throw new HttpError(400, `Run rejected: ${String(error instanceof Error ? error.message : error).slice(0, 500)}`);
@@ -191,7 +202,7 @@ async function route(request: Request, env: AppEnv): Promise<Response> {
         if (Math.abs(entries.reduce((s,w) => s+w.weight, 0) - 1) > 1e-6 || entries.length !== applicableMetrics(task).length || new Set(entries.map(e => e.metric)).size !== entries.length || entries.some(w => !applicableMetrics(task).includes(w.metric as never))) throw new HttpError(400, `Supply each applicable metric once for ${task}; weights must sum to 1`);
       }
       await db.batch([
-        db.prepare('UPDATE source_weights SET human=?,ai=? WHERE id=1').bind(input.source.human, input.source.ai), db.prepare('DELETE FROM benchmark_weights'),
+        db.prepare('UPDATE source_weights SET human=?,ai=? WHERE id=1').bind(input.source.human, input.source.ai), db.prepare("DELETE FROM benchmark_weights WHERE task IN ('government','opposition','rebuttal')"),
         ...input.benchmark.map(w => db.prepare('INSERT INTO benchmark_weights(task,metric,weight) VALUES(?,?,?)').bind(w.task,w.metric,w.weight)),
       ]);
       return json({ saved: true });
@@ -213,7 +224,7 @@ async function route(request: Request, env: AppEnv): Promise<Response> {
   throw new HttpError(404, 'Endpoint not found');
 }
 export default {
-  async fetch(request: Request, env: AppEnv): Promise<Response> {
+  async fetch(request: Request, env: AppEnv, ctx: ExecutionContext): Promise<Response> {
     const origin = request.headers.get('Origin');
     const allowed = env.ALLOWED_ORIGINS.split(',').map(v => v.trim());
     const headers = new Headers({ 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Vary': 'Origin', 'Referrer-Policy': 'no-referrer' });
@@ -224,7 +235,7 @@ export default {
     headers.set('Access-Control-Max-Age', '600');
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers });
     let response: Response;
-    try { response = await route(request, env); }
+    try { response = await route(request, env, ctx); }
     catch (error) {
       if (error instanceof HttpError) response = json({ error: error.message }, error.status);
       else if (error instanceof ZodError) response = json({ error: error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; ') }, 400);

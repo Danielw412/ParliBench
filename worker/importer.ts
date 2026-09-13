@@ -1,7 +1,10 @@
+import { extractImportedCases } from './cases';
+import { z } from 'zod';
+import { coreCaseForRebuttal, coreCaseSchema, structuredCaseSchema } from '../shared/cases';
 import { importSchema, validateMetrics, type ImportData } from './validation';
 import { insert, rows } from './db';
 import { validateBlindText } from './sanitize';
-import type { SystemInfo } from '../shared/domain';
+import { activeResponseSQL, type SystemInfo } from '../shared/domain';
 
 type Run = ImportData['responses'][number];
 type Standard = ImportData['standardized_rebuttal_tasks'][number];
@@ -9,9 +12,9 @@ function requireRef<T>(map: Map<string, T>, key: string, label: string): T {
   const value = map.get(key); if (!value) throw new Error(`Unknown ${label}: ${key}`); return value;
 }
 export function sameTask(a: Run, b: Run): boolean {
-  return a.id !== b.id && a.system_id !== b.system_id && a.topic_id === b.topic_id && a.task === b.task && a.task !== 'rebuttal' && a.standardized_task_id === b.standardized_task_id;
+  return a.id !== b.id && a.system_id !== b.system_id && a.topic_id === b.topic_id && a.task === b.task && a.standardized_task_id === b.standardized_task_id && (a.task !== 'rebuttal' || (!!a.government_source_response_id && a.government_source_response_id === b.government_source_response_id));
 }
-export async function bulkImport(db: D1Database, input: unknown) {
+export async function bulkImport(db: D1Database, input: unknown, claimId?: string) {
   const data = importSchema.parse(input);
   const [oldSystems, oldTopics, oldRuns, oldStandards, oldPredictions, oldRebuttals, oldPreps, oldJudges] = await Promise.all([
     rows<SystemInfo>(db, 'SELECT * FROM systems'), rows<{ id: string }>(db, 'SELECT id FROM topics'),
@@ -47,7 +50,25 @@ export async function bulkImport(db: D1Database, input: unknown) {
     if ((run.task === 'standardized_rebuttal') !== !!run.standardized_task_id) throw new Error('Standardized rebuttal requires a standardized_task_id; other tasks must omit it');
     if (run.standardized_task_id && requireRef(standards, run.standardized_task_id, 'standardized task').topic_id !== run.topic_id) throw new Error('Standardized task topic does not match');
     if (run.task === 'prediction') requireRef(predictions, run.id, 'prediction relationship');
-    if (run.task === 'rebuttal') requireRef(rebuttals, run.id, 'rebuttal relationship');
+    if (run.task === 'rebuttal' && !run.government_source_response_id) requireRef(rebuttals, run.id, 'historical rebuttal relationship');
+    if (run.task !== 'rebuttal' && (run.government_source_response_id || run.opposition_source_response_id || run.rebuttal_input_snapshot)) throw new Error('Case generation receives only the motion');
+    if (run.government_source_response_id || run.opposition_source_response_id) {
+      if (!run.government_source_response_id || !run.opposition_source_response_id) throw new Error('Rebuttal requires both source cases');
+      const gov=requireRef(runs,run.government_source_response_id,'Government source'), opp=requireRef(runs,run.opposition_source_response_id,'own Opposition source');
+      if (gov.task!=='government' || opp.task!=='opposition' || gov.topic_id!==run.topic_id || opp.topic_id!==run.topic_id || opp.system_id!==run.system_id) throw new Error('Rebuttal requires same-topic Government and tested system own Opposition');
+      const pool=await rows<{core_case_json:string}>(db,'SELECT core_case_json FROM rebuttal_pool WHERE government_response_id=? AND topic_id=?',gov.id,run.topic_id);
+      if (!pool.length) throw new Error('Government response must be frozen in the Rebuttal Pool');
+      const ready=await rows(db,`SELECT response_id FROM structured_cases WHERE response_id IN (?,?) AND status='ready'`,gov.id,opp.id);
+      if (ready.length!==2) throw new Error('Both rebuttal sources require valid structured cases');
+      if (!run.rebuttal_input_snapshot) throw new Error('Rebuttal requires an immutable compact input snapshot');
+      const snapshot=JSON.parse(run.rebuttal_input_snapshot);
+      z.tuple([coreCaseSchema,coreCaseSchema]).parse(snapshot);
+      if (JSON.stringify(snapshot[0])!==JSON.stringify(JSON.parse(pool[0].core_case_json))) throw new Error('Government input must match the frozen core case');
+      if (!claimId) {
+        const own=await rows<{case_json:string}>(db,'SELECT case_json FROM structured_cases WHERE response_id=?',opp.id);
+        if (JSON.stringify(snapshot[1])!==JSON.stringify(coreCaseForRebuttal(structuredCaseSchema.parse(JSON.parse(own[0].case_json))))) throw new Error('Opposition input must match the tested system own structured case');
+      }
+    }
     if (run.task === 'full_opposition') requireRef(preps, run.id, 'full Opposition relationship');
     run.display_output = validateBlindText(run.display_output, identities);
   }
@@ -67,6 +88,7 @@ export async function bulkImport(db: D1Database, input: unknown) {
   }
   for (const judge of data.ai_judges) requireRef(systems, judge.system_id, 'judge system');
   const statements: D1PreparedStatement[] = [db.prepare('PRAGMA defer_foreign_keys = ON')];
+  if (claimId) statements.push(db.prepare(`UPDATE run_claims SET status='filled',response_id=?,resolved_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`).bind(data.responses[0].id,claimId));
   for (const table of ['systems', 'topics', 'standardized_rebuttal_tasks', 'responses', 'opposition_predictions', 'opposition_rebuttals', 'opposition_preps', 'ai_judges'] as const) {
     for (const row of data[table]) statements.push(insert(db, table, row));
   }
@@ -87,7 +109,8 @@ export async function bulkImport(db: D1Database, input: unknown) {
   statements.push(db.prepare(`INSERT OR IGNORE INTO matchups(id,response_low,response_high)
     SELECT a.id||'~'||b.id,a.id,b.id FROM responses a JOIN responses b
     ON a.id<b.id AND a.system_id<>b.system_id AND a.topic_id=b.topic_id AND a.task=b.task
-    AND coalesce(a.standardized_task_id,'')=coalesce(b.standardized_task_id,'') WHERE a.task<>'rebuttal'`));
+    AND coalesce(a.standardized_task_id,'')=coalesce(b.standardized_task_id,'') WHERE ${activeResponseSQL('a')} AND (a.task<>'rebuttal' OR a.government_source_response_id=b.government_source_response_id)`));
   await db.batch(statements);
+  await extractImportedCases(db,data.responses.filter(r=>['government','opposition'].includes(r.task)).map(r=>r.id));
   return { imported: Object.fromEntries(Object.entries(data).map(([k, v]) => [k, v.length])) };
 }
