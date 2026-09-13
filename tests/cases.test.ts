@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { coreCaseForRebuttal, parseCase, structuredCaseSchema, caseMarkdown } from '../shared/cases';
 import { renderPrompt } from '../worker/prompts';
 import { defaultExtractorModels, extractCase } from '../worker/cases';
+import { extractorJsonSchema, geminiHttpError } from '../worker/extractor';
 import { demoCase } from '../scripts/demo-data';
 
 const raw=demoCase('This House would test each case.','government','Reliable access');
@@ -48,6 +49,44 @@ function extractionDB(input:string) {
 }
 afterEach(()=>vi.unstubAllGlobals());
 describe('optional Gemini extraction',()=> {
+  it('sends a compact generation shape while preserving strict local validation',async()=> {
+    const expected=parseCase(raw)!;
+    const fetch=vi.fn().mockResolvedValue(Response.json({candidates:[{content:{parts:[{text:JSON.stringify(expected)}]}}]}));
+    vi.stubGlobal('fetch',fetch);
+    await extractCase(extractionDB('Preamble\n'+raw).db,'response',{GEMINI_API_KEY:'test-key'});
+    const body=JSON.parse(fetch.mock.calls[0][1].body);
+    expect(body.generationConfig.responseJsonSchema).toEqual(extractorJsonSchema);
+    const schema=JSON.stringify(extractorJsonSchema);
+    for(const keyword of ['$schema','default','maxLength','minLength','maxItems','minItems','exclusiveMinimum','maximum']) expect(schema).not.toContain(`"${keyword}"`);
+    expect(body.generationConfig.responseJsonSchema.properties.contentions.items.required).toContain('warrants');
+    expect(body.generationConfig.responseJsonSchema.properties.schema_version.enum).toEqual([1]);
+    expect(structuredCaseSchema.safeParse({...expected,contentions:Array(21).fill(expected.contentions[0])}).success).toBe(false);
+    expect(structuredCaseSchema.safeParse({...expected,motion_interpretation:'x'.repeat(100001)}).success).toBe(false);
+  });
+  it('preserves actionable Gemini errors and redacts credentials in storage and logs',async()=> {
+    const log=vi.spyOn(console,'error').mockImplementation(()=>{});
+    try {
+      const fetch=vi.fn().mockImplementation(async()=>Response.json({error:{status:'INVALID_ARGUMENT',message:'responseJsonSchema is too complex test-key'}},{status:400}));
+      vi.stubGlobal('fetch',fetch);
+      const observed=extractionDB('Free-form case');
+      await extractCase(observed.db,'response',{GEMINI_API_KEY:'test-key'});
+      expect(observed.writes[0][4]).toContain('HTTP 400: INVALID_ARGUMENT: responseJsonSchema is too complex [redacted]');
+      expect(JSON.stringify(log.mock.calls)).not.toContain('test-key');
+      expect(log).toHaveBeenCalledTimes(4);
+    } finally { log.mockRestore(); }
+  });
+  it('handles non-JSON and oversized upstream errors',async()=> {
+    expect(await geminiHttpError(new Response('<html>Bad gateway</html>',{status:502}),'test-key')).toBe('HTTP 502');
+    const error=await geminiHttpError(Response.json({error:{message:'x'.repeat(5000)}},{status:400}),'test-key');
+    expect(error.length).toBeLessThan(1100);
+  });
+  it('still rejects invalid model output after relaxing generation constraints',async()=> {
+    const invalid=parseCase(raw)!;invalid.contentions[0].warrants=[];
+    vi.stubGlobal('fetch',vi.fn().mockImplementation(async()=>Response.json({candidates:[{content:{parts:[{text:JSON.stringify(invalid)}]}}]})));
+    const observed=extractionDB('Preamble\n'+raw);
+    await extractCase(observed.db,'response',{GEMINI_API_KEY:'test-key'});
+    expect(observed.writes[0][1]).toBe('failed');
+  });
   it('does not call Gemini when headings parse or no key is configured',async()=> {
     const fetch=vi.fn();vi.stubGlobal('fetch',fetch);
     await extractCase(extractionDB(raw).db,'response',{GEMINI_API_KEY:'test-key'});

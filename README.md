@@ -159,6 +159,10 @@ The parser is conservative: missing core arguments, unrecognized preambles, and 
 
 These are the requested model IDs. Availability depends on the Gemini API/account; unavailable models are recorded as failures and the next model is tried. No different model is silently substituted. `GEMINI_EXTRACTOR_MODELS` can override the comma-separated IDs. Each attempt has a six-second deadline; automatic fallback runs after saving via `waitUntil`. For large bulk imports, failed cases can be retried individually. Extraction is instructed to copy verbatim, with strict JSON validation and a mechanical wording-preservation check. It must not improve, fact-check, paraphrase, or invent debate content. Review derived data where needed.
 
+Gemini receives a compact schema derived from the shared case schema: field types, required fields, object shape, and the schema version. Large string/array bounds and numeric constraints are enforced locally after generation, alongside the verbatim check, instead of being sent to Gemini's constrained decoder. This avoids coupling API schema acceptance to application validation limits.
+
+Upstream HTTP failures retain Gemini's status and message (bounded and with API keys redacted) in the extraction error and the `gemini_extraction_http_error` Worker log event. Search Worker logs by that event or `response_id`; the log includes the attempted model and HTTP status. Older `HTTP 400` records cannot reveal the original provider message because it was discarded; retry extraction after deploying to capture details. Token usage alone does not confirm that a request returned usable, validated output.
+
 To enable Gemini in production, create a key in [Google AI Studio](https://aistudio.google.com/apikey), then run:
 
 ```sh
