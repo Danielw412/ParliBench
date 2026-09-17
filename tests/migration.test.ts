@@ -11,7 +11,7 @@ it('migrates a populated legacy database without changing responses, relationshi
       await db.batch(sql.split(/;\s*(?=(?:CREATE|INSERT|PRAGMA|ALTER|UPDATE|DROP)\b|$)/i).filter(s=>s.trim()).map(s=>db.prepare(s)));
     }
     const files=(await readdir('migrations')).filter(f=>f.endsWith('.sql')).sort();
-    for(const file of files.filter(f=>!f.startsWith('0005'))) await migrate(file);
+    for(const file of files.filter(f=>f<'0005')) await migrate(file);
     await db.batch([
       db.prepare("INSERT INTO systems(id,display_name,provider,model,interface) VALUES('s','System','Provider','Model','Interface'),('s2','Second','Provider','Model','Interface')"),
       db.prepare("INSERT INTO topics(id,motion,category) VALUES('t','Historical motion','Serious')"),
@@ -37,5 +37,15 @@ it('migrates a populated legacy database without changing responses, relationshi
     expect((await db.prepare('PRAGMA foreign_key_check').all()).results).toEqual([]);
     expect(await db.prepare("SELECT status FROM run_claims WHERE id='old-claim'").first()).toEqual({status:'released'});
     await expect(db.prepare("UPDATE responses SET prompt='rewrite' WHERE id='government'").run()).rejects.toThrow('immutable');
+    // Later migrations keep every row and continue to refuse unrecorded provenance changes.
+    for(const file of files.filter(f=>f>='0006')) await migrate(file);
+    for(const row of responses) expect(await db.prepare('SELECT * FROM responses WHERE id=?').bind(row.id).first()).toMatchObject({...row,provenance_revision:1});
+    for(let i=0;i<tables.length;i++) expect((await db.prepare(`SELECT * FROM ${tables[i]}`).all()).results).toEqual(before[i].results);
+    expect((await db.prepare('PRAGMA foreign_key_check').all()).results).toEqual([]);
+    await expect(db.prepare("UPDATE responses SET raw_output='rewrite' WHERE id='government'").run()).rejects.toThrow('immutable');
+    await expect(db.prepare("UPDATE responses SET raw_output='rewrite',provenance_revision=2 WHERE id='government'").run()).rejects.toThrow('immutable');
+    await db.prepare("INSERT INTO response_revisions(response_id,revision,snapshot_json) SELECT id,provenance_revision,json_object('raw_output',raw_output) FROM responses WHERE id='government'").run();
+    await db.prepare("UPDATE responses SET raw_output='Recorded correction',provenance_revision=2 WHERE id='government'").run();
+    expect(await db.prepare("SELECT raw_output,provenance_revision FROM responses WHERE id='government'").first()).toEqual({raw_output:'Recorded correction',provenance_revision:2});
   } finally {await mf.dispose();}
 });

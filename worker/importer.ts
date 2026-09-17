@@ -14,6 +14,13 @@ function requireRef<T>(map: Map<string, T>, key: string, label: string): T {
 export function sameTask(a: Run, b: Run): boolean {
   return a.id !== b.id && a.system_id !== b.system_id && a.topic_id === b.topic_id && a.task === b.task && a.standardized_task_id === b.standardized_task_id && (a.task !== 'rebuttal' || (!!a.government_source_response_id && a.government_source_response_id === b.government_source_response_id));
 }
+// Builds every missing canonical pair: different systems, same topic/task, same frozen source for Rebuttal.
+export function matchupStatement(db: D1Database) {
+  return db.prepare(`INSERT OR IGNORE INTO matchups(id,response_low,response_high)
+    SELECT a.id||'~'||b.id,a.id,b.id FROM responses a JOIN responses b
+    ON a.id<b.id AND a.system_id<>b.system_id AND a.topic_id=b.topic_id AND a.task=b.task
+    AND coalesce(a.standardized_task_id,'')=coalesce(b.standardized_task_id,'') WHERE ${activeResponseSQL('a')} AND (a.task<>'rebuttal' OR a.government_source_response_id=b.government_source_response_id)`);
+}
 export async function bulkImport(db: D1Database, input: unknown, claimId?: string) {
   const data = importSchema.parse(input);
   const [oldSystems, oldTopics, oldRuns, oldStandards, oldPredictions, oldRebuttals, oldPreps, oldJudges] = await Promise.all([
@@ -106,10 +113,7 @@ export async function bulkImport(db: D1Database, input: unknown, claimId?: strin
   }
   // One atomic batch: malformed references/duplicates roll back the entire import.
   // SQL builds canonical pair candidates without a quadratic JS query loop.
-  statements.push(db.prepare(`INSERT OR IGNORE INTO matchups(id,response_low,response_high)
-    SELECT a.id||'~'||b.id,a.id,b.id FROM responses a JOIN responses b
-    ON a.id<b.id AND a.system_id<>b.system_id AND a.topic_id=b.topic_id AND a.task=b.task
-    AND coalesce(a.standardized_task_id,'')=coalesce(b.standardized_task_id,'') WHERE ${activeResponseSQL('a')} AND (a.task<>'rebuttal' OR a.government_source_response_id=b.government_source_response_id)`));
+  statements.push(matchupStatement(db));
   await db.batch(statements);
   await extractImportedCases(db,data.responses.filter(r=>['government','opposition'].includes(r.task)).map(r=>r.id));
   return { imported: Object.fromEntries(Object.entries(data).map(([k, v]) => [k, v.length])) };

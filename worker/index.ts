@@ -1,15 +1,16 @@
 import { benchmarkAdmin } from './benchmark-admin';
+import { adminConsole } from './admin-console';
+import { audit } from './audit';
 import { extractImportedCases, type ExtractorEnv } from './cases';
 import { z, ZodError } from 'zod';
-import { credentials, registration, filterSchema, id, systemSchema, topicSchema } from './validation';
+import { credentials, registration, filterSchema, id } from './validation';
 import { createSession, digest, equalSecret, hashPin, rateLimit, requireAdmin, requireUser } from './auth';
 import { HttpError, one, rows } from './db';
 import { bulkImport } from './importer';
 import { nextMatch, saveVote, judgmentDetail } from './arena';
 import { leaderboard, headToHead } from './statistics';
 import { claimRun, recordRun, releaseRun, runBoard } from './scheduler';
-import { validateBlindText } from './sanitize';
-import { applicableMetrics, TASKS, type SystemInfo, type User } from '../shared/domain';
+import { type SystemInfo, type User } from '../shared/domain';
 
 export type AppEnv = Cloudflare.Env & ExtractorEnv & { PIN_PEPPER: string };
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -128,97 +129,46 @@ async function route(request: Request, env: AppEnv, ctx: ExecutionContext): Prom
     return json({ ...user, counts, judgment_count: counts.reduce((sum, c) => sum + c.count, 0) });
   }
   if (path.startsWith('/api/admin')) {
-    await rateLimit(db, `admin:${await digest(request.headers.get('CF-Connecting-IP') || 'local')}`, 60, 60000);
+    // Generous enough for a console session that loads several panels at once; still bounds abuse per address.
+    await rateLimit(db, `admin:${await digest(request.headers.get('CF-Connecting-IP') || 'local')}`, 300, 60000);
     const me = await requireAdmin(request, db);
-    const handled=await benchmarkAdmin(db,path,method,()=>body(request),me.id,env);
+    const read = () => body(request);
+    const handled = await benchmarkAdmin(db, path, method, read, me, env)
+      ?? await adminConsole({ db, path, method, url, body: read, me, env, waitUntil: p => ctx.waitUntil(p), tokenHash: await digest(request.headers.get('Authorization')!.slice(7)) });
     if (handled !== undefined) return json(handled);
-    if (path === '/api/admin/catalog' && method === 'GET') {
-      const [systems, topics, responses, standards, judges, weights, source, users] = await Promise.all([
-        rows(db, 'SELECT * FROM systems'), rows(db, 'SELECT * FROM topics'),
-        rows(db, 'SELECT r.id,r.system_id,r.topic_id,r.task,r.sample,r.display_version,c.status extraction_status FROM responses r LEFT JOIN structured_cases c ON c.response_id=r.id ORDER BY r.id'),
-        rows(db, 'SELECT * FROM standardized_rebuttal_tasks'), rows(db, 'SELECT * FROM ai_judges'),
-        rows(db, "SELECT * FROM benchmark_weights WHERE task IN ('government','opposition','rebuttal') AND metric<>'threat'"), one(db, 'SELECT human,ai FROM source_weights WHERE id=1'),
-        rows(db, 'SELECT id,username,user_type,created_at,is_admin FROM users ORDER BY is_admin DESC,username COLLATE NOCASE'),
-      ]);
-      return json({ systems, topics, responses, standards, judges, weights, source, users });
-    }
     if (path === '/api/admin/import' && method === 'POST') {
-      try {
-        const input=await body(request); const result=await bulkImport(db,input);
-        if (env.GEMINI_API_KEY) {
-          const ids=(input as {responses?:{id:string;task:string}[]}).responses?.filter(r=>['government','opposition'].includes(r.task)).map(r=>r.id) || [];
-          ctx.waitUntil(extractImportedCases(db,ids,env));
-        }
-        return json(result,201);
-      }
+      const input=await body(request);
+      let result: Awaited<ReturnType<typeof bulkImport>>;
+      try { result=await bulkImport(db,input); }
       catch (error) {
         if (error instanceof ZodError || error instanceof HttpError) throw error;
         throw new HttpError(400, `Import rejected: ${String(error instanceof Error ? error.message : error).slice(0, 500)}`);
       }
+      await db.batch([audit(db,me,'import','benchmark',null,`Imported ${Object.entries(result.imported).filter(([,n])=>n).map(([k,n])=>`${n} ${k.replace(/_/g,' ')}`).join(', ') || 'no records'}`,result.imported)]);
+      if (env.GEMINI_API_KEY) {
+        const ids=(input as {responses?:{id:string;task:string}[]}).responses?.filter(r=>['government','opposition'].includes(r.task)).map(r=>r.id) || [];
+        ctx.waitUntil(extractImportedCases(db,ids,env));
+      }
+      return json(result,201);
     }
     if (path === '/api/admin/next-run' && method === 'GET') return json(await runBoard(db,url.searchParams.get('system') ? id.parse(url.searchParams.get('system')) : undefined,url.searchParams.get('exclude') || undefined));
-    if (path === '/api/admin/runs' && method === 'POST') return json(await claimRun(db, await body(request)), 201);
+    if (path === '/api/admin/runs' && method === 'POST') {
+      const claim=await claimRun(db, await body(request));
+      await db.batch([audit(db,me,'start','run',claim.claim_id,`Started ${claim.task} run for ${claim.system.display_name} (sample ${claim.sample})`)]);
+      return json(claim, 201);
+    }
     const run = path.match(/^\/api\/admin\/runs\/([a-zA-Z0-9-]+)\/(response|release)$/);
     if (run && method === 'POST') {
-      if (run[2] === 'release') return json(await releaseRun(db, run[1]));
-      try { const result=await recordRun(db,run[1],await body(request)); if (env.GEMINI_API_KEY) ctx.waitUntil(extractImportedCases(db,[result.response_id],env)); return json(result,201); }
+      if (run[2] === 'release') { const released=await releaseRun(db, run[1]); await db.batch([audit(db,me,'release','run',run[1],'Released an in-progress run')]); return json(released); }
+      let result: Awaited<ReturnType<typeof recordRun>>;
+      try { result=await recordRun(db,run[1],await body(request)); }
       catch (error) {
         if (error instanceof ZodError || error instanceof HttpError) throw error;
         throw new HttpError(400, `Run rejected: ${String(error instanceof Error ? error.message : error).slice(0, 500)}`);
       }
-    }
-    const display = path.match(/^\/api\/admin\/responses\/([a-zA-Z0-9_-]+)$/);
-    if (display && method === 'GET') {
-      const response = await one(db, 'SELECT * FROM responses WHERE id=?', display[1]);
-      if (!response) throw new HttpError(404, 'Response not found'); return json(response);
-    }
-    if (display && method === 'PATCH') {
-      const input = z.object({ display_output: z.string().min(1).max(100000) }).strict().parse(await body(request));
-      const systems = await rows<SystemInfo>(db, 'SELECT * FROM systems');
-      let clean: string;
-      try { clean = validateBlindText(input.display_output, systems.flatMap(s => [s.id, s.display_name, s.provider, s.model, s.interface])); }
-      catch (error) { throw new HttpError(400, (error as Error).message); }
-      const changed = await db.batch([
-        db.prepare('UPDATE responses SET display_output=?,display_version=display_version+1 WHERE id=?').bind(clean, display[1]),
-        db.prepare('INSERT INTO response_display_revisions(response_id,version,display_output) SELECT id,display_version,display_output FROM responses WHERE id=?').bind(display[1]),
-      ]);
-      if (!changed[0].meta.changes) throw new HttpError(404, 'Response not found'); return json({ saved: true });
-    }
-    const entity = path.match(/^\/api\/admin\/(systems|topics)\/([a-zA-Z0-9_-]+)$/);
-    if (entity && method === 'PUT') {
-      const parsed = (entity[1] === 'systems' ? systemSchema : topicSchema).parse(await body(request));
-      if (parsed.id !== entity[2]) throw new HttpError(400, 'ID cannot change');
-      const values = Object.entries(parsed).filter(([k]) => k !== 'id');
-      const result = await db.prepare(`UPDATE ${entity[1]} SET ${values.map(([k]) => `${k}=?`).join(',')} WHERE id=?`).bind(...values.map(([,v]) => v), parsed.id).run();
-      if (!result.meta.changes) throw new HttpError(404, 'Record not found'); return json({ saved: true });
-    }
-    if (path === '/api/admin/weights' && method === 'PUT') {
-      const schema = z.object({ source: z.object({ human: z.number().min(0).max(1), ai: z.number().min(0).max(1) }),
-        benchmark: z.array(z.object({ task: z.enum(TASKS), metric: id, weight: z.number().min(0).max(1) })) });
-      const input = schema.parse(await body(request));
-      if (Math.abs(input.source.human + input.source.ai - 1) > 1e-6) throw new HttpError(400, 'Source weights must sum to 1');
-      for (const task of TASKS) {
-        const entries = input.benchmark.filter(w => w.task === task);
-        if (Math.abs(entries.reduce((s,w) => s+w.weight, 0) - 1) > 1e-6 || entries.length !== applicableMetrics(task).length || new Set(entries.map(e => e.metric)).size !== entries.length || entries.some(w => !applicableMetrics(task).includes(w.metric as never))) throw new HttpError(400, `Supply each applicable metric once for ${task}; weights must sum to 1`);
-      }
-      await db.batch([
-        db.prepare('UPDATE source_weights SET human=?,ai=? WHERE id=1').bind(input.source.human, input.source.ai), db.prepare("DELETE FROM benchmark_weights WHERE task IN ('government','opposition','rebuttal')"),
-        ...input.benchmark.map(w => db.prepare('INSERT INTO benchmark_weights(task,metric,weight) VALUES(?,?,?)').bind(w.task,w.metric,w.weight)),
-      ]);
-      return json({ saved: true });
-    }
-    const account = path.match(/^\/api\/admin\/users\/([a-zA-Z0-9_-]+)$/);
-    if (account && method === 'PATCH') {
-      const input = z.object({ is_admin: z.boolean() }).strict().parse(await body(request));
-      const target = await one<{ id: string; username: string; is_admin: number }>(db, 'SELECT id,username,is_admin FROM users WHERE id=?', account[1]);
-      if (!target) throw new HttpError(404, 'Account not found');
-      // The last administrator cannot be demoted, including by themselves, or nobody could grant the role back.
-      if (target.is_admin && !input.is_admin) {
-        const remaining = await one<{ n: number }>(db, 'SELECT count(*) n FROM users WHERE is_admin=1 AND id<>?', target.id);
-        if (!remaining?.n) throw new HttpError(400, target.id === me.id ? 'You are the only administrator. Promote another account before removing your own access.' : 'ParliBench must keep at least one administrator.');
-      }
-      await db.prepare('UPDATE users SET is_admin=? WHERE id=?').bind(input.is_admin ? 1 : 0, target.id).run();
-      return json({ saved: true, id: target.id, username: target.username, is_admin: input.is_admin ? 1 : 0 });
+      await db.batch([audit(db,me,'record','response',result.response_id,'Recorded a response for a started run')]);
+      if (env.GEMINI_API_KEY) ctx.waitUntil(extractImportedCases(db,[result.response_id],env));
+      return json(result,201);
     }
   }
   throw new HttpError(404, 'Endpoint not found');
@@ -230,7 +180,7 @@ export default {
     const headers = new Headers({ 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Vary': 'Origin', 'Referrer-Policy': 'no-referrer' });
     if (origin && !allowed.includes(origin)) return json({ error: 'Origin not allowed' }, 403);
     if (origin) headers.set('Access-Control-Allow-Origin', origin);
-    headers.set('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,OPTIONS');
+    headers.set('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
     headers.set('Access-Control-Allow-Headers', 'Content-Type,Authorization');
     headers.set('Access-Control-Max-Age', '600');
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers });

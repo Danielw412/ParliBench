@@ -29,11 +29,13 @@ Run `npm run check` after substantial changes.
 
 ### Shared
 - `shared/domain.ts` — task/metric names, labels, shared API types, run slot/plan types. Keep task/metric definitions centralized here.
+- `shared/admin.ts` — admin console API shapes and the list of correctable response fields.
 
 ### Frontend
 - `src/App.tsx` — routing/app shell
 - `src/NextRun.tsx` — next-run recommendation, run claiming, response recording
-- `src/pages/Admin.tsx` — admin tools
+- `src/pages/Admin.tsx` — admin console shell: grouped navigation, `?section=` routing, lazy sections
+- `src/admin/` — one module per console section (`Overview`, `Responses`/`ResponseDetail`, `Systems`, `Topics`, `Prompts`, `RebuttalPool`, `HumanVotes`, `AiJudges`, `Weights`, `ManualEntry`, `JsonImport`, `Export`, `Accounts`, `AuditLog`, `Runs`), plus `ui.tsx` (data hooks, URL state, dialogs, deletion previews) and `votes.tsx`
 - `src/pages/Arena.tsx` — human pairwise judging
 - `src/pages/Leaderboards.tsx` — leaderboards
 - `src/pages/System.tsx`, `Compare.tsx` — system detail/comparison
@@ -51,10 +53,16 @@ Run `npm run check` after substantial changes.
 - `worker/auth.ts` — auth/admin enforcement
 - `worker/sanitize.ts` — display blinding/sanitization
 - `worker/db.ts` — DB helpers
+- `worker/admin-console.ts` — admin console routes (after `benchmark-admin.ts`)
+- `worker/admin-records.ts` — response lists/corrections, judges, votes, accounts, run history, export
+- `worker/admin-delete.ts` — deletion impact previews and cascading deletes
+- `worker/admin-stats.ts` — overview, per-system and per-topic statistics
+- `worker/audit.ts` — admin audit log
 
 ### Database/tests
 - `migrations/` — additive production migrations. Do not only edit old migrations for production changes.
 - `tests/api.test.ts`
+- `tests/admin-console.test.ts`
 - `tests/ranking.test.ts`
 - `tests/run-queue.test.ts`
 - `tests/scheduler.test.ts`
@@ -63,10 +71,12 @@ Run `npm run check` after substantial changes.
 
 ### Run provenance
 Responses store exact system/topic/task/prompt/raw output/display output/time/interface/reasoning/configuration/sample/context.
-Raw output and prompt provenance are historical records; do not mutate them in place. Display text may be revised separately.
+Raw output and prompt provenance are historical records; never mutate them silently. Display text may be revised separately.
+Administrators may correct raw output, prompt, time, interface, reasoning, configuration, duration, context, sample, and system only through the audited correction path: it stores the exact prior state in `response_revisions`, and the `preserve_raw_output` trigger rejects any update that skips it. Topic, task, source cases, prompt revision, and Rebuttal input snapshots never change.
 
 ### Admin
 Admin access is account-based (`users.is_admin`). Every `/api/admin` route must be protected server-side.
+Every admin mutation writes an `admin_audit` entry, in the same D1 batch as the change where practical. Destructive actions must be previewable (`/api/admin/impact/:kind/:id`), cascade children-first in one batch, and leave `PRAGMA foreign_key_check` clean. Prefer deactivation when votes should be kept. Human votes may be inspected or deleted by admins, never edited.
 
 ### Arena
 Comparisons are blinded. Do not expose system/model/provider identity. Assignments snapshot what the judge saw so later edits do not rewrite history.
@@ -157,14 +167,17 @@ Do not pass likely response, defense, round priorities, or model/provider identi
 
 ## Frozen Government rebuttal pool
 Government rebuttal sources are frozen, not resolved live from the leaderboard for every run.
-Admins should be able to snapshot/freeze the current top Government systems/cases. Once frozen, source response IDs must not silently change. If a source is unavailable, show that instead of silently substituting another model.
+Admins should be able to snapshot/freeze the current top Government systems/cases. Once frozen, source response IDs must not silently change. If a source is unavailable, show that instead of silently substituting another model. An admin may explicitly remove a frozen source only while no Rebuttal response or open run uses it; the removal is recorded in `rebuttal_pool_removals`, which the `keep_rebuttal_pool` trigger requires.
 
 ## UI direction
-Integrate into the existing Admin/Next Run flow. Useful admin surfaces:
-- Next Run
-- Prompts
-- Rebuttal Pool
-- existing manual/import/display/catalog/weights/admin tabs
+Integrate into the existing Admin console. Sections live under `/admin?section=`:
+- Benchmark: Overview, Next Run, Run history
+- Content: Responses (with detail), Systems (with per-model stats), Topics, Prompts, Rebuttal Pool
+- Judgments: Human votes, AI judges & votes, Ranking weights
+- Data: Manual entry, JSON import, Export & backup
+- People: Accounts, Audit log
+
+Add new admin tools as a section module in `src/admin/` and a route in `worker/admin-console.ts`, not as a new page.
 
 Keep the existing restrained visual style. Do not create a parallel admin app or add a new UI framework.
 

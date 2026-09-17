@@ -124,13 +124,39 @@ For a manual frontend build, copy `.env.example` to `.env.local` and set `VITE_A
 Administrator access is a role on a user account. Sign in normally, then open `/admin`; the link appears in the footer for administrators. Non-administrators get an explicit refusal, and the server rejects every `/api/admin` request from an account without the role, so hiding the link is presentation only.
 
 - **Initial administrator.** Migration [`0003_account_admins.sql`](migrations/0003_account_admins.sql) adds `users.is_admin` and promotes the existing `dannywang` account, but only when the database has no administrator yet. It is a no-op on a database where that account does not exist or an administrator already does, so re-running migrations never changes an established deployment.
-- **Granting and revoking.** An administrator opens the **Administrators** tab in `/admin` to view every account and switch its role. Revoking applies immediately to sessions the other person already holds.
+- **Granting and revoking.** An administrator opens **Accounts** in `/admin` to view every account and switch its role. Revoking applies immediately to sessions the other person already holds.
 - **Last administrator.** The backend refuses any change that would leave zero administrators, including an administrator revoking their own access. Promote a replacement first.
 - **Recovery.** If a deployment somehow has no administrator, grant one straight in D1 with `npm run admin:grant -- <username> --remote` (omit `--remote` for the local database). This needs Cloudflare credentials, so it is not a path an application user can take.
 
 ## Admin workflow
 
-The existing Admin area provides **Next Run, Prompts, Rebuttal Pool, Manual Entry, JSON Import, Display Editor, Catalog, Ranking Weights, and Administrators**. Every endpoint is protected by account-based administrator authorization.
+`/admin` is a console with grouped sections. Every section is a URL (`/admin?section=responses&system=demo-atlas`), so filters, open records, and reloads keep their place. Every endpoint is protected by account-based administrator authorization.
+
+| Group | Section | What an administrator can do |
+| --- | --- | --- |
+| Benchmark | **Overview** | Totals, 7-day activity, a needs-attention list (failed or missing extraction, runs in progress, abandoned assignments, missing Rebuttal prompt or pool), responses by task, a system × motion coverage matrix, and recent responses, votes, and admin changes |
+| | **Next Run** | Recommended run, rendered prompt, start/record/release (below) |
+| | **Run history** | Every started run by status, system, and task; release in-progress runs; delete finished or released run records |
+| Content | **Responses** | Search and filter every response (system, topic, task, active, extraction, frozen, sort); bulk activate, deactivate, retry extraction, or delete. A response opens with its counts and tools: display text, audited record correction, structured case, source inputs, raw output and prompt, full history, activate/deactivate, delete |
+| | **Systems** | Per-model statistics: responses by task, topics covered, matchups, human and AI votes, human/AI/combined scores and ranks, average duration, last response. Create, edit every configuration field, clone, activate/deactivate, delete. Each system shows seven ranking views and coverage by motion |
+| | **Topics** | Per-topic statistics, create, edit motion/category/metadata, activate/deactivate, delete |
+| | **Prompts** | Versioned templates with usage counts; load any old version into the editor to restore it as a new version |
+| | **Rebuttal Pool** | Freeze one or many Government cases, correct structure, and explicitly remove an unused frozen source |
+| Judgments | **Human votes** | Filter by system, topic, task, judge type, or judge; inspect the exact texts, orientation, and metric votes; delete a judgment; clear abandoned assignments |
+| | **AI judges & votes** | Edit or delete judges, browse and inspect AI judgments with explanations and snapshots, delete individual judgments |
+| | **Ranking weights** | Source shares and per-task metric weights with live totals |
+| Data | **Manual entry**, **JSON import** | Single records or atomic batches through the same validation |
+| | **Export & backup** | Download a re-importable case corpus, or a full backup of every benchmark table without PIN hashes, salts, or sessions |
+| People | **Accounts** | Search accounts with vote and session counts; grant or revoke admin, change judge type, rename, reset a PIN, sign out every session, view a judge's votes, delete an account |
+| | **Audit log** | Every administrator change with actor, time, summary, and details; searchable and filterable |
+
+### Corrections, deletion, and the audit log
+
+- **Deletion previews.** Every destructive action shows what the server will remove before it runs: responses, dependent Rebuttals or legacy pipeline stages, matchups, Arena assignments, human and AI votes, run records, frozen sources, judges, and sessions. Large deletions require typing `delete`. Deletions cascade in one atomic D1 batch, children first, and keep foreign keys intact. Rankings recalculate without the removed votes.
+- **Deactivate instead of delete** when a response, system, or topic should leave new runs and matchups but keep its votes.
+- **Record corrections.** A response's raw output, prompt, generation time, interface, reasoning, configuration, duration, context, sample, and system can be corrected. Each correction first stores the exact prior state in `response_revisions` with the administrator and reason; the provenance trigger still rejects any update that skips this step. Topic, task, source cases, prompt revision, and Rebuttal input snapshots never change: delete and re-import instead. Reassigning a system is refused when it would pair a system against itself, break a Rebuttal's own-Opposition relationship, or reuse a reserved sample. Correcting raw output can re-run extraction, which first marks the old structured case stale.
+- **Blocked deletions.** You cannot delete your own account or the last administrator. Accounts that authored prompt revisions or froze Rebuttal sources are permanent authors; revoke their access and reset their PIN instead. A frozen source cannot be removed while any Rebuttal response or in-progress run uses it.
+- **Audit log.** Every administrator mutation, including imports, run starts and recordings, exports, and weight changes, writes an `admin_audit` row with the actor's username snapshot. A deleted response keeps its full record in the audit entry. Human votes remain the judge's own data: administrators can inspect or delete them, never edit them.
 
 ### Next Run scheduling
 
@@ -148,7 +174,7 @@ No Rebuttal prompt is seeded. Its wording is deferred. The provisional template 
 
 ### Structured results and optional Gemini
 
-Raw output stays exact and canonical, including whitespace. After the response import commits, deterministic parsing recognizes the supplied case headings and validates [`shared/cases.ts`](shared/cases.ts). Derived JSON and revision history live separately in `structured_cases` and `structured_case_revisions`. Failure never rolls back or deletes the benchmark response. Next Run, Display Editor, and Rebuttal Pool expose extraction status, retry, and manual JSON correction.
+Raw output stays exact and canonical, including whitespace. After the response import commits, deterministic parsing recognizes the supplied case headings and validates [`shared/cases.ts`](shared/cases.ts). Derived JSON and revision history live separately in `structured_cases` and `structured_case_revisions`. Failure never rolls back or deletes the benchmark response. Next Run, Responses, and Rebuttal Pool expose extraction status, retry, and manual JSON correction.
 
 The parser is conservative: missing core arguments, unrecognized preambles, and ambiguous headings trigger fallback instead of guessing. When Gemini is configured, the server tries these models in order:
 
@@ -175,7 +201,7 @@ Arena uses the structured representation as readable headings, paragraphs, and s
 
 ### Frozen Rebuttal Pool
 
-Admins select exact Government response IDs from the pool list. Freezing stores the response ID, topic, administrator, time, and a compact case snapshot. Neither the source nor its frozen content changes when rankings, extraction, or display text change. An inactive response or missing structured case is clearly marked unavailable; another source is never substituted.
+Admins select exact Government response IDs from the pool list. Freezing stores the response ID, topic, administrator, time, and a compact case snapshot. Neither the source nor its frozen content changes when rankings, extraction, or display text change. An inactive response or missing structured case is clearly marked unavailable; another source is never substituted. Removing a frozen source is an explicit administrator action, refused while any Rebuttal response or in-progress run uses it; `rebuttal_pool_removals` keeps the removed snapshot, and the database trigger rejects any deletion without that record.
 
 A future Rebuttal run requires an active topic and tested system, a Rebuttal prompt revision, an available frozen Government source on that topic, and that tested system's own structured Opposition response on the topic. Government can come from another system. The scheduler chooses the earliest available Opposition sample deterministically. Every tested system is eligible to answer the same frozen sources.
 
@@ -185,11 +211,13 @@ A future Rebuttal run requires an active topic and tested system, a Rebuttal pro
 
 Manual Entry handles systems, topics, independent cases, AI judges, and votes. JSON imports accept up to 500 records / 2 MB atomically; split large vote batches where appropriate. Main keys are `systems`, `topics`, `responses`, `ai_judges`, and `ai_votes`. See [`worker/validation.ts`](worker/validation.ts) and [`demo/benchmark.json`](demo/benchmark.json).
 
-Every run retains system, topic, task, exact prompt/raw output, time, interface, reasoning, configuration, duration, sample, and context. Database triggers protect provenance. Display and structure revisions are separate. New Rebuttals additionally require Government/Opposition source IDs and compact input snapshots; prefer Next Run to assemble these safely.
+Every run retains system, topic, task, exact prompt/raw output, time, interface, reasoning, configuration, duration, sample, and context. Database triggers protect provenance: an administrator correction must record the state it replaces, and structural relationships never change. Display and structure revisions are separate. New Rebuttals additionally require Government/Opposition source IDs and compact input snapshots; prefer Next Run to assemble these safely.
 
 Prediction, Standardized Rebuttal, Full Opposition, and old pipeline Rebuttals remain stored but are excluded from new scheduling, active rankings, and Arena filters. Historical relationship arrays remain accepted for archival imports; they are not offered in normal Manual Entry. Legacy assignments and vote snapshots remain accessible in judgment history.
 
 Migration `0005_three_capabilities.sql` rebuilds the constrained response/claim tables while retaining historical rows and checks actual foreign-key integrity before committing. Legacy open claims without prompt snapshots are retained as released history; restart those runs with an explicit prompt version.
+
+Migration `0006_admin_console.sql` is additive: it adds `responses.provenance_revision`, `response_revisions`, `rebuttal_pool_removals`, and `admin_audit`, replaces the provenance and frozen-pool triggers with their audited forms, and adds indexes for console statistics. Existing rows start at revision 1 unchanged.
 
 ### AI judgments
 
@@ -266,16 +294,32 @@ All routes have an `/api` prefix. Every route uses the same `Authorization: Bear
 | `POST /admin/runs` | Admin | Claim a recommended run |
 | `POST /admin/runs/:id/response` | Admin | Import the response for an in-progress run |
 | `POST /admin/runs/:id/release` | Admin | Return an in-progress run to the queue |
-| `GET /admin/responses/:id`, `PATCH /admin/responses/:id` | Admin | Run inspection / display-only edits |
+| `GET /admin/responses/:id`, `PATCH /admin/responses/:id` | Admin | Run inspection / display text and active status |
+| `PUT /admin/responses/:id`, `DELETE /admin/responses/:id?reason=` | Admin | Audited record correction / cascading delete |
+| `GET /admin/responses?system=&topic=&task=&active=&extraction=&frozen=&q=&sort=&offset=&limit=` | Admin | Filtered, paged response list |
+| `GET /admin/responses/:id/detail`, `POST /admin/responses/bulk` | Admin | Counts and full history / bulk activate, deactivate, retry extraction, delete |
+| `GET /admin/overview`, `GET /admin/options`, `GET /admin/audit?entity=&q=` | Admin | Dashboard / filter choices / audit log |
+| `GET /admin/system-stats[/:id]`, `GET /admin/topic-stats` | Admin | Per-model and per-topic statistics and rankings |
 | `PUT /admin/systems/:id`, `PUT /admin/topics/:id` | Admin | Metadata and active status |
+| `DELETE /admin/systems/:id`, `DELETE /admin/topics/:id` | Admin | Cascading delete |
+| `GET /admin/impact/:kind/:id` | Admin | Deletion preview for `response`, `system`, `topic`, `judge`, or `user` |
+| `GET /admin/judges`, `PUT /admin/judges/:id`, `DELETE /admin/judges/:id` | Admin | AI judges |
+| `GET /admin/ai-votes[/:id]`, `DELETE /admin/ai-votes/:id` | Admin | Browse, inspect, delete AI judgments |
+| `GET /admin/human-votes[/:id]`, `DELETE /admin/human-votes/:id` | Admin | Browse, inspect, delete human judgments |
+| `POST /admin/assignments/cleanup` | Admin | Clear unvoted assignments older than N hours |
+| `GET /admin/runs?status=&system=&task=`, `DELETE /admin/runs/:id` | Admin | Run history / delete a finished run record |
+| `DELETE /admin/rebuttal-pool/:responseId?reason=` | Admin | Remove an unused frozen source |
 | `PUT /admin/weights` | Admin | Complete metric and source weight configuration |
-| `PATCH /admin/users/:id` | Admin | Grant or revoke administrator access on an account |
+| `GET /admin/accounts?q=&role=` | Admin | Accounts with activity counts |
+| `PATCH /admin/users/:id`, `DELETE /admin/users/:id` | Admin | Role, judge type, username / delete an account and its votes |
+| `POST /admin/users/:id/pin`, `DELETE /admin/users/:id/sessions` | Admin | Reset a PIN / sign out every other session |
+| `GET /admin/export?scope=corpus\|backup` | Admin | Re-importable corpus or credential-free full backup |
 
 Leaderboard query values: `source=human|ai|combined`; `subgroup=all|Parliamentary Debater|Non-Parliamentary Debater`; `category=all|Serious|Informal`; `task=all|government|opposition|rebuttal`; `metric=overall|weighted|argument|evidence|creativity|strategy|rebuttal`; optional `judge=<id>`. Invalid enums return 400.
 
 ## Verification and MVP boundaries
 
-Tests cover auth, imports, immutable provenance, prompt rendering/version snapshots, system filters, deterministic extraction and model fallback, manual revisions, frozen source fairness, Rebuttal relationships, concurrent claims/saves, historical-task exclusion, populated migration integrity, and ranking statistics. Integration tests forbid real model network requests; extractor tests inject mocked Gemini responses.
+Tests cover auth, imports, immutable provenance, prompt rendering/version snapshots, system filters, deterministic extraction and model fallback, manual revisions, frozen source fairness, Rebuttal relationships, concurrent claims/saves, historical-task exclusion, populated migration integrity, ranking statistics, and the admin console: role enforcement on every console route, statistics, audited corrections and trigger enforcement, cascading deletes with foreign-key checks, frozen-source removal, account management, exports, and the audit log. Integration tests forbid real model network requests; extractor tests inject mocked Gemini responses.
 
 This is a small-corpus MVP. Ranking fitting and import reference validation currently load the selected observations/catalog into memory; the full Hessian inversion is cubic in the number of systems. Before scaling to a large public benchmark, add incremental sufficient-statistic aggregation, bounded admin catalog pagination, and scheduled pruning of expired rate-limit rows. Matchup construction is quadratic per topic/task. Application-level blinding does not prevent inference attacks against tiny datasets; public live results and self-selected judge populations have methodological limits. Confidence intervals do not account for correlated judges, repeated topic content, or systematic dataset selection bias.
 

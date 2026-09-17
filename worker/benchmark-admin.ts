@@ -1,5 +1,7 @@
 import { z } from 'zod';
-import { TASKS } from '../shared/domain';
+import { TASKS, TASK_LABELS, type User } from '../shared/domain';
+import type { PromptUsage } from '../shared/admin';
+import { audit } from './audit';
 import { coreCaseForRebuttal, structuredCaseSchema } from '../shared/cases';
 import { id } from './validation';
 import { HttpError, one, rows } from './db';
@@ -7,12 +9,19 @@ import { listPrompts, revisePrompt } from './prompts';
 import { extractCase, storeCase, type ExtractorEnv } from './cases';
 import { validateBlindText } from './sanitize';
 
-export async function benchmarkAdmin(db: D1Database, path: string, method: string, body: () => Promise<unknown>, userId: string, env: ExtractorEnv): Promise<unknown | undefined> {
+export async function benchmarkAdmin(db: D1Database, path: string, method: string, body: () => Promise<unknown>, me: User, env: ExtractorEnv): Promise<unknown | undefined> {
+  const userId = me.id;
   if (path === '/api/admin/prompts') {
-    if (method === 'GET') return listPrompts(db);
+    if (method === 'GET') {
+      const revisions=await listPrompts(db);
+      const usage=new Map((await rows<{id:string;claims:number;responses:number}>(db,'SELECT p.id,(SELECT count(*) FROM run_claims c WHERE c.prompt_revision_id=p.id) claims,(SELECT count(*) FROM responses r WHERE r.prompt_revision_id=p.id) responses FROM prompt_revisions p')).map(u=>[u.id,u]));
+      return revisions.map(r=>({...r,claims:usage.get(r.id)?.claims || 0,responses:usage.get(r.id)?.responses || 0})) satisfies PromptUsage[];
+    }
     if (method === 'POST') {
       const input=z.object({task:z.enum(TASKS),template:z.string()}).strict().parse(await body());
-      return revisePrompt(db,input.task,input.template,userId);
+      const saved=await revisePrompt(db,input.task,input.template,userId);
+      await db.batch([audit(db,me,'revise','prompt',saved.id,`Saved a new ${TASK_LABELS[input.task]} prompt revision`)]);
+      return saved;
     }
   }
   if (path === '/api/admin/rebuttal-pool') {
@@ -36,6 +45,7 @@ export async function benchmarkAdmin(db: D1Database, path: string, method: strin
         if (validateBlindText(core,identities.flatMap(s=>[s.id,s.display_name,s.provider,s.model,s.interface])) !== core) throw new HttpError(400,'Remove identifying content from the structured case before freezing');
         statements.push(db.prepare('INSERT OR IGNORE INTO rebuttal_pool(government_response_id,topic_id,core_case_json,frozen_by) VALUES(?,?,?,?)').bind(responseId,run.topic_id,core,userId));
       }
+      statements.push(audit(db,me,'freeze','rebuttal_pool',null,`Froze ${statements.length} Government source${statements.length===1 ? '' : 's'} into the Rebuttal Pool`,{response_ids:input.response_ids}));
       await db.batch(statements); return {frozen:true};
     }
   }
@@ -43,12 +53,18 @@ export async function benchmarkAdmin(db: D1Database, path: string, method: strin
   if (extraction) {
     const responseId=extraction[1];
     if (method==='GET') return {structure:await one(db,'SELECT * FROM structured_cases WHERE response_id=?',responseId)};
-    if (method==='POST' && extraction[2]) return {structure:await extractCase(db,responseId,env)};
+    if (method==='POST' && extraction[2]) {
+      const structure=await extractCase(db,responseId,env);
+      await db.batch([audit(db,me,'extract','response',responseId,'Retried structured extraction')]);
+      return {structure};
+    }
     if (method==='PUT' && !extraction[2]) {
       const run=await one<{task:string}>(db,'SELECT task FROM responses WHERE id=?',responseId);
       if (!run || !['government','opposition'].includes(run.task)) throw new HttpError(400,'Choose a case-generation response');
       const value=structuredCaseSchema.parse(await body());
-      await storeCase(db,responseId,value,'manual',null,userId); return {saved:true};
+      await storeCase(db,responseId,value,'manual',null,userId);
+      await db.batch([audit(db,me,'structure','response',responseId,'Saved a manual structured-case revision')]);
+      return {saved:true};
     }
   }
   return undefined;
